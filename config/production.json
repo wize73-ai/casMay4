@@ -1,0 +1,122 @@
+{
+    "environment": "production",
+    "version": "1.0.0",
+    "debug": false,
+    "server": {
+      "host": "0.0.0.0",
+      "port": 8000,
+      "workers": 8,
+      "timeout": 60
+    },
+    "logging": {
+      "level": "INFO",
+      "console_enabled": true,
+      "file_enabled": true,
+      "json_enabled": true,
+      "structured": true,
+      "use_colors": false,
+      "components": {
+        "api": "INFO",
+        "models": "INFO",
+        "pipeline": "INFO",
+        "audit": "INFO"
+      },
+      "libraries": {
+        "uvicorn": "WARNING",
+        "fastapi": "WARNING",
+        "sqlalchemy": "WARNING",
+        "transformers": "ERROR",
+        "torch": "ERROR"
+      }
+    },
+    "audit": {
+      "enabled": true,
+      "retention_days": 365,
+      "buffer_size": 1000,
+      "flush_interval": 30
+    },
+    "metrics": {
+      "enabled": true,
+      "save_interval": 600,
+      "retention_days": 90,
+      "detailed_logging": false
+    },
+    "security": {
+      "jwt_secret": "${JWT_SECRET}",
+      "token_expiry_hours": 8,
+      "token_refresh_hours": 72,
+      "cors_origins": "${CORS_ORIGINS}",
+      "rate_limit_enabled": true,
+      "rate_limit_requests": 120,
+      "rate_limit_period": 60
+    },
+    "models": {
+      "use_gpu": true,
+      "model_size": "medium",
+      "low_memory_mode": false,
+      "batch_size": 16,
+      "model_cleanup_interval": 300,
+      "preload_models": [
+        "embedding_model",
+        "translation",
+        "language_detection"
+      ],
+      "language_detection": {
+        "name": "FastLangDetect",
+        "task": "language-detection",
+        "tasks": ["language-detection"],
+        "languages": ["en", "es", "fr", "de"],
+        "path": "models/language_detection-model",
+        "class": "FastLanguageDetector",
+        "tokenizer": null,
+        "framework": "custom",
+        "enabled": true,
+        "model_type": "detector",
+        "version": "1.0.0",
+        "location": "local",
+        "size_gb": 0.1,
+        "memory_required": 1,
+        "gpu_memory_required": 0,
+        "requires_gpu": false
+      }
+    },
+    "pipeline": {
+      "max_concurrent_tasks": 20,
+      "queue_timeout": 600,
+      "retry_attempts": 3,
+      "retry_delay": 5
+    },
+    "veracity": {
+      "enabled": true,
+      "threshold": 0.80,
+      "min_confidence": 0.75
+    },
+    "rag": {
+      "enabled": true,
+      "vector_store_type": "faiss",
+      "chunk_size": 1000,
+      "chunk_overlap": 200,
+      "retrieval_top_k": 5,
+      "similarity_threshold": 0.75
+    },
+    "database": {
+      "url": "${DATABASE_URL}",
+      "pool_size": 20,
+      "max_overflow": 20,
+      "echo": false
+    },
+    "caching": {
+      "enabled": true,
+      "ttl": 3600,
+      "max_size": 1000,
+      "translation_cache_enabled": true,
+      "embedding_cache_enabled": true
+    },
+    "monitoring": {
+      "alerting_enabled": true,
+      "error_threshold": 0.05,
+      "latency_threshold": 2.0,
+      "memory_threshold": 0.90,
+      "health_check_interval": 60
+    }
+  }

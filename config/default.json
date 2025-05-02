@@ -1,0 +1,230 @@
+{
+    "environment": "development",
+    "version": "1.0.0",
+    "build_id": "dev-20250428",
+    "build_date": "2025-04-28T00:00:00Z",
+    "debug": true,
+    "server": {
+      "host": "0.0.0.0",
+      "port": 8000,
+      "workers": 4,
+      "timeout": 60
+    },
+    "logging": {
+      "level": "INFO",
+      "console_enabled": true,
+      "file_enabled": true,
+      "json_enabled": true,
+      "structured": true,
+      "log_dir": "logs",
+      "max_size": 10485760,
+      "backup_count": 10,
+      "use_colors": true,
+      "components": {
+        "api": "INFO",
+        "models": "INFO",
+        "pipeline": "INFO",
+        "audit": "INFO"
+      },
+      "libraries": {
+        "uvicorn": "INFO",
+        "fastapi": "INFO",
+        "sqlalchemy": "WARNING",
+        "transformers": "WARNING",
+        "torch": "WARNING"
+      },
+      "middleware": {
+        "request_context": true,
+        "timing": true
+      }
+    },
+    "audit": {
+      "enabled": true,
+      "log_dir": "logs/audit",
+      "retention_days": 90,
+      "buffer_size": 1000,
+      "flush_interval": 60,
+      "cleanup_interval": 86400,
+      "sensitive_fields": [
+        "password",
+        "api_key",
+        "token",
+        "secret",
+        "credential",
+        "ssn",
+        "credit_card"
+      ]
+    },
+    "metrics": {
+      "enabled": true,
+      "metrics_dir": "logs/metrics",
+      "save_interval": 3600,
+      "max_samples": 1000,
+      "max_time_series_points": 1000,
+      "retention_days": 30,
+      "detailed_logging": false,
+      "save_time_series": true,
+      "thresholds": {
+        "request_time_warning": 1.0,
+        "request_time_critical": 3.0,
+        "error_rate_warning": 0.05,
+        "error_rate_critical": 0.10,
+        "memory_usage_warning": 0.80,
+        "memory_usage_critical": 0.95
+      }
+    },
+    "security": {
+      "jwt_secret": "development-secret-key-replace-in-production",
+      "token_expiry_hours": 24,
+      "token_refresh_hours": 168,
+      "api_key_expiry_days": 365,
+      "password_min_length": 8,
+      "cors_origins": "*",
+      "rate_limit_enabled": true,
+      "rate_limit_requests": 100,
+      "rate_limit_period": 60
+    },
+    "models": {
+      "models_dir": "models",
+      "cache_dir": "cache/models",
+      "use_gpu": true,
+      "model_size": "medium",
+      "low_memory_mode": false,
+      "worker_threads": 4,
+      "batch_size": 8,
+      "model_cleanup_interval": 300,
+      "preload_models": [
+        "embedding_model",
+        "translation_en_es",
+        "language_detection"
+      ],
+      "embedding_model": {
+        "path": "sentence-transformers/all-MiniLM-L6-v2",
+        "type": "transformers"
+      },
+      "translation_en_es": {
+        "model_name": "Helsinki-NLP/opus-mt-en-es",
+        "model_type": "seq2seq",
+        "tokenizer_name": "Helsinki-NLP/opus-mt-en-es"
+      },
+      "translation_es_en": {
+        "model_name": "Helsinki-NLP/opus-mt-es-en",
+        "model_type": "seq2seq",
+        "tokenizer_name": "Helsinki-NLP/opus-mt-es-en"
+      },
+      "language_detection": {
+        "model_name": "papluca/xlm-roberta-base-language-detection",
+        "model_type": "classifier",
+        "tokenizer_name": "papluca/xlm-roberta-base-language-detection"
+      }
+    },
+    "task_model_mapping": {
+      "embedding": "embedding_model",
+      "language_detection": "language_detection",
+      "translation_en-es": "translation_en_es",
+      "translation_es-en": "translation_es_en",
+      "translation": "translation_en_es"
+    },
+    "language_model_mapping": {
+      "en": {
+        "embedding": "embedding_model"
+      },
+      "es": {
+        "embedding": "embedding_model"
+      }
+    },
+    "veracity": {
+      "enabled": true,
+      "threshold": 0.75,
+      "max_sample_size": 1000,
+      "min_confidence": 0.7,
+      "reference_embeddings_path": "data/reference_embeddings.json",
+      "language_pairs": [
+        ["en", "es"],
+        ["es", "en"]
+      ]
+    },
+    "rag": {
+      "enabled": true,
+      "documents_dir": "data/documents",
+      "index_dir": "data/indices",
+      "vector_store_type": "faiss",
+      "chunk_size": 1000,
+      "chunk_overlap": 200,
+      "embedding_model_key": "embedding_model",
+      "retrieval_top_k": 5,
+      "similarity_threshold": 0.7
+    },
+    "pipeline": {
+      "max_concurrent_tasks": 10,
+      "queue_timeout": 600,
+      "retry_attempts": 3,
+      "retry_delay": 5,
+      "translation": {
+        "preserve_formatting_default": true,
+        "formality_default": "neutral",
+        "verify_default": false
+      },
+      "document_translation": {
+        "timeout": 1800,
+        "preserve_layout_default": true,
+        "translate_tracked_changes_default": false,
+        "translate_comments_default": false
+      }
+    },
+    "database": {
+      "url": "sqlite:///casalingua.db",
+      "pool_size": 5,
+      "max_overflow": 10,
+      "echo": false,
+      "connect_args": {
+        "check_same_thread": false
+      }
+    },
+    "roles": {
+      "admin": [
+        "admin:read",
+        "admin:write",
+        "models:read",
+        "models:write",
+        "translation:read",
+        "translation:write",
+        "audit:read"
+      ],
+      "translator": [
+        "models:read",
+        "translation:read",
+        "translation:write"
+      ],
+      "viewer": [
+        "models:read",
+        "translation:read"
+      ],
+      "api": [
+        "models:read",
+        "translation:read",
+        "translation:write"
+      ]
+    },
+    "api_keys": {
+      "demo_key_8f4b2d1e": {
+        "key": "cslg_8f4b2d1e7a3c5b9e2f1d8a7c4b2e5f9d",
+        "name": "Demo API Key",
+        "scopes": ["translation:read", "translation:write", "models:read"],
+        "created_by": "system",
+        "created_at": "2025-04-28T00:00:00Z",
+        "expires_at": "2026-04-28T00:00:00Z",
+        "active": true
+      }
+    },
+    "users": {
+      "admin": {
+        "id": "admin",
+        "username": "admin",
+        "email": "admin@casalingua.example",
+        "password_hash": "salt$hash",
+        "role": "admin",
+        "active": true
+      }
+    }
+  }

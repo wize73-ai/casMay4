@@ -1,0 +1,173 @@
+{
+  "environment": "development",
+  "debug": true,
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "workers": 2,
+    "timeout": 120
+  },
+  "logging": {
+    "level": "DEBUG",
+    "console_enabled": true,
+    "file_enabled": true,
+    "json_enabled": false,
+    "structured": false,
+    "use_colors": true,
+    "components": {
+      "api": "DEBUG",
+      "models": "DEBUG",
+      "pipeline": "DEBUG",
+      "audit": "INFO"
+    },
+    "libraries": {
+      "uvicorn": "INFO",
+      "fastapi": "INFO",
+      "sqlalchemy": "INFO",
+      "transformers": "WARNING",
+      "torch": "WARNING"
+    }
+  },
+  "audit": {
+    "enabled": true,
+    "buffer_size": 100,
+    "flush_interval": 10
+  },
+  "metrics": {
+    "enabled": true,
+    "save_interval": 300,
+    "detailed_logging": true
+  },
+  "security": {
+    "jwt_secret": "dev-jwt-secret-key-replace-in-production",
+    "token_expiry_hours": 72,
+    "cors_origins": "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000",
+    "rate_limit_enabled": false
+  },
+  "models": {
+    "use_gpu": true,
+    "model_size": "small",
+    "low_memory_mode": true,
+    "batch_size": 4,
+    "model_cleanup_interval": 60,
+    "preload_models": [
+      "embedding_model",
+      "language_detection"
+    ],
+    "translation": {
+      "model_name": "facebook/nllb-200-distilled-600M",
+      "model_type": "seq2seq",
+      "tasks": ["translation"],
+      "languages": ["en", "es", "fr", "de", "it", "zh", "ja", "ar", "ru", "pt"],
+      "enabled": true,
+      "version": "1.0.0",
+      "size_gb": 2.0,
+      "memory_required": 4,
+      "gpu_memory_required": 2,
+      "requires_gpu": false
+    },
+    "multipurpose": {
+      "model_name": "philschmid/bart-large-cnn-samsum",
+      "model_type": "seq2seq",
+      "tokenizer_name": "philschmid/bart-large-cnn-samsum",
+      "task": "summarization",
+      "languages": ["en"],
+      "framework": "transformers",
+      "enabled": true,
+      "version": "1.0.0",
+      "size_gb": 1.2,
+      "memory_required": 3,
+      "gpu_memory_required": 1.5,
+      "requires_gpu": false
+    },
+    "verification": {
+      "model_name": "microsoft/deberta-v3-xsmall",
+      "model_type": "classifier",
+      "tasks": ["verification", "classification"],
+      "languages": ["en"],
+      "enabled": true,
+      "version": "1.0.0",
+      "size_gb": 0.5,
+      "memory_required": 2,
+      "gpu_memory_required": 1,
+      "requires_gpu": false
+    },
+    "language_detection": {
+      "name": "FastLangDetect",
+      "task": "language-detection",
+      "tasks": ["language-detection"],
+      "languages": ["en", "es", "fr", "de"],
+      "path": "models/language-detection-model",
+      "class": "FastLanguageDetector",
+      "tokenizer": null,
+      "framework": "custom",
+      "enabled": true,
+      "model_type": "detector",
+      "version": "1.0.0",
+      "location": "local",
+      "size_gb": 0.1,
+      "memory_required": 1,
+      "gpu_memory_required": 0,
+      "requires_gpu": false
+    }
+  },
+  "task_model_mapping": {
+    "translation": "translation",
+    "multipurpose": "multipurpose",
+    "verification": "verification",
+    "language_detection": "language_detection"
+  },
+  "pipeline": {
+    "max_concurrent_tasks": 4,
+    "queue_timeout": 300,
+    "retry_attempts": 2
+  },
+  "rag": {
+    "enabled": true,
+    "chunk_size": 500,
+    "retrieval_top_k": 3
+  },
+  "database": {
+    "url": "sqlite:///casalingua_dev.db",
+    "echo": true
+  },
+  "dev_tools": {
+    "hot_reload": true,
+    "profiling_enabled": true,
+    "slow_query_threshold": 0.5,
+    "slow_request_threshold": 1.0,
+    "mock_services": {
+      "enabled": false,
+      "mock_data_dir": "tests/mock_data"
+    },
+    "test_api_key": "cslg_dev_test_key_12345",
+    "disable_auth_for_paths": [
+      "/docs",
+      "/redoc",
+      "/openapi.json",
+      "/health",
+      "/pipeline/translate"
+    ]
+  },
+  "api_keys": {
+    "dev_key_12345": {
+      "key": "cslg_dev_12345_abcdef",
+      "name": "Development API Key",
+      "scopes": ["*:*"],
+      "created_by": "system",
+      "created_at": "2025-04-28T00:00:00Z",
+      "expires_at": "2026-04-28T00:00:00Z",
+      "active": true
+    }
+  },
+  "users": {
+    "dev": {
+      "id": "dev",
+      "username": "developer",
+      "email": "dev@casalingua.example",
+      "password_hash": "salt$hash",
+      "role": "admin",
+      "active": true
+    }
+  }
+}
