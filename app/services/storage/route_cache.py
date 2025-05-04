@@ -133,9 +133,12 @@ class RouteCache:
                 return None
             
             # Check for expiration
-            if self.ttl_seconds is not None:
-                timestamp = self.timestamps.get(key, 0)
-                if time.time() - timestamp > self.ttl_seconds:
+            if key in self.timestamps:
+                timestamp_data = self.timestamps.get(key)
+                timestamp_time = timestamp_data.get('time', 0) if isinstance(timestamp_data, dict) else timestamp_data
+                ttl = timestamp_data.get('ttl', self.ttl_seconds) if isinstance(timestamp_data, dict) else self.ttl_seconds
+                
+                if ttl is not None and time.time() - timestamp_time > ttl:
                     # Expired, remove from cache
                     del self.cache[key]
                     del self.timestamps[key]
@@ -162,7 +165,7 @@ class RouteCache:
         Args:
             key: The cache key
             value: The value to cache
-            ttl: Optional TTL override for this specific item
+            ttl: Optional TTL override for this specific item (in seconds)
         """
         if not self.cache_enabled:
             return
@@ -179,7 +182,14 @@ class RouteCache:
             
             # Add to cache
             self.cache[key] = value_copy
-            self.timestamps[key] = time.time()
+            
+            # Store current time for TTL calculation
+            # If ttl parameter is provided, it overrides the instance ttl_seconds
+            self.timestamps[key] = {
+                'time': time.time(),
+                'ttl': ttl if ttl is not None else self.ttl_seconds
+            }
+            
             self.hit_counts[key] = 0
     
     async def invalidate(self, key: str) -> bool:
@@ -211,7 +221,8 @@ class RouteCache:
     async def _evict_entry(self) -> None:
         """Evict the least recently used entry from the cache."""
         # Find the oldest entry
-        oldest_key = min(self.timestamps.items(), key=lambda x: x[1])[0]
+        oldest_key = min(self.timestamps.items(), key=lambda x: 
+                          x[1]['time'] if isinstance(x[1], dict) else x[1])[0]
         
         # Remove it
         del self.cache[oldest_key]

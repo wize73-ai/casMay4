@@ -364,34 +364,50 @@ class BatchOptimizer:
             completion_event=completion_event
         )
         
-        # For testing, if we're not running with a background task, process directly
-        if not self.running and self.process_function is not None:
+        # For testing, if we're not running with a background task
+        if not self.running:
             # Create a dummy batch with just this item
             batch = BatchGroup(group_key=group_key)
             batch.add_item(item)
             
             # Process the item directly
             items_list = [item]
+            
             try:
-                results = await self.process_function(items_list)
-                
-                # Set the result and mark as processed
-                if item_key in results:
-                    item.result = results[item_key]
+                if self.process_function is not None:
+                    # This is a direct call to the process function which must return a dictionary
+                    # with results keyed by item keys
+                    results = await self.process_function(items_list)
+                    
+                    # Set the result and mark as processed
+                    if item_key in results:
+                        item.result = results[item_key]
+                    else:
+                        # Fall back to just returning the first result if the key is not found
+                        logger.debug(f"Item key {item_key} not found in results, using first result")
+                        for result_key, result_value in results.items():
+                            item.result = result_value
+                            break
                 else:
-                    # Fall back to just returning the first result
-                    for result_key, result_value in results.items():
-                        item.result = result_value
-                        break
-                        
+                    # No process function, just return the original data
+                    logger.debug(f"No process function for batch optimizer '{self.name}', returning original data")
+                    item.result = item_data
+                
+                # Mark as processed and set completion event  
                 item.processed = True
+                if item.completion_event:
+                    item.completion_event.set()  # Set the completion event
                 
                 # Return the result directly
                 return item.result
+                
             except Exception as e:
                 # Propagate the error
+                logger.error(f"Error in direct processing: {str(e)}", exc_info=True)
                 item.error = e
                 item.processed = True
+                if item.completion_event:
+                    item.completion_event.set()  # Set the completion event even on error
                 raise e
                 
         # Normal batch processing

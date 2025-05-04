@@ -33,13 +33,15 @@ class TestBatchOptimizer:
         results = {}
         for item in batch_items:
             # Simulate processing by adding a "processed" flag
+            item_key = item.key  # Use the exact key from the BatchItem
+            
             if isinstance(item.item_data, dict):
                 result = dict(item.item_data)
                 result["processed"] = True
                 result["batch_size"] = len(batch_items)
-                results[item.key] = result
+                results[item_key] = result
             else:
-                results[item.key] = {"processed": True, "original": item.item_data, "batch_size": len(batch_items)}
+                results[item_key] = {"processed": True, "original": item.item_data, "batch_size": len(batch_items)}
         
         return results
     
