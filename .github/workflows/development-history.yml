@@ -38,110 +38,110 @@ jobs:
 
       - name: Generate Development History
         run: |
-          cat > generate_history.py << 'EOF'
-          import os
-          import sys
-          import datetime
-          from git import Repo
-          from mdutils.mdutils import MdUtils
+          cat > generate_history.py << EOF
+import os
+import sys
+import datetime
+from git import Repo
+from mdutils.mdutils import MdUtils
 
-          # Initialize repository
-          repo = Repo('.')
-          
-          # Get all commits on the mbart-translation-implementation branch
-          commits = list(repo.iter_commits('mbart-translation-implementation'))
-          commits.reverse()  # Oldest first
-          
-          # Create markdown document
-          md_file = MdUtils(file_name='DEVELOPMENT_HISTORY', title='CasaLingua Development History')
-          
-          # Add introduction
-          md_file.new_paragraph("This document provides a comprehensive history of the development work done on the CasaLingua project, focusing on recent improvements to translation and anonymization functionality.")
-          
-          # Add timeline
-          md_file.new_header(level=2, title='Development Timeline')
-          
-          # Add commit history as timeline
-          for i, commit in enumerate(commits):
-            commit_date = datetime.datetime.fromtimestamp(commit.committed_date).strftime('%Y-%m-%d %H:%M:%S')
-            md_file.new_header(level=3, title=f'Phase {i+1}: {commit.summary}')
-            md_file.new_paragraph(f'**Date:** {commit_date}')
-            md_file.new_paragraph(f'**Author:** {commit.author.name}')
-            md_file.new_paragraph('**Changes:**')
-            
-            # Add commit message details
-            message_body = commit.message.split('\n\n', 1)
-            if len(message_body) > 1:
-                details = message_body[1].strip()
-                md_file.new_paragraph(details)
-            
-            # List changed files
-            changed_files = []
-            for item in commit.stats.files:
-                changed_files.append(item)
-            
-            if changed_files:
-                md_file.new_paragraph('**Files Changed:**')
-                for file in changed_files:
-                    md_file.new_line(f'- `{file}`')
-          
-          # Add major features implemented
-          md_file.new_header(level=2, title='Major Features Implemented')
-          
-          # MBART Translation Support
-          md_file.new_header(level=3, title='MBART Translation Support')
-          md_file.new_paragraph("Implementation of Facebook's MBART multilingual translation model support:")
-          md_file.new_list([
-              "Added comprehensive language code mapping for all 50 languages supported by MBART",
-              "Implemented language token handling for proper MBART translation",
-              "Enhanced tokenization process for MBART's special requirements",
-              "Added source and target language token forcing for accurate translation"
-          ])
-          
-          # Anonymization Enhancements
-          md_file.new_header(level=3, title='Anonymization Enhancements')
-          md_file.new_paragraph("Improvements to the anonymization pipeline for better PII detection and handling:")
-          md_file.new_list([
-              "Implemented deterministic anonymization for consistent results",
-              "Enhanced pattern detection for multiple languages (EN, ES, FR, DE)",
-              "Added realistic fake data generation for anonymized entities",
-              "Improved performance and consistency of entity detection"
-          ])
-          
-          # Integration of Orphaned Code
-          md_file.new_header(level=3, title='Integration of Orphaned Code')
-          md_file.new_paragraph("Connected previously unused utility functions to improve system functionality:")
-          md_file.new_list([
-              "Integrated language pattern detection functions for better entity recognition",
-              "Enhanced deterministic random function for consistent anonymization",
-              "Fixed metrics collection for performance tracking"
-          ])
-          
-          # Testing
-          md_file.new_header(level=3, title='Testing Infrastructure')
-          md_file.new_paragraph("Added tests to verify functionality:")
-          md_file.new_list([
-              "Created test script for MBART language code conversion",
-              "Implemented anonymization tests with different strategies",
-              "Verified consistency of results across multiple runs"
-          ])
-          
-          # Technical Architecture
-          md_file.new_header(level=2, title='Technical Architecture')
-          md_file.new_paragraph("The CasaLingua system combines multiple AI models and NLP techniques to provide comprehensive language processing capabilities:")
-          
-          # Core Components
-          md_file.new_header(level=3, title='Core Components')
-          md_file.new_list([
-              "**Translation Pipeline**: Handles multilingual translation using MBART and other models",
-              "**Anonymization Pipeline**: Detects and handles personally identifiable information",
-              "**Model Manager**: Centralized management of AI models with automatic loading",
-              "**Metrics Collection**: Performance tracking and monitoring"
-          ])
-          
-          # Save markdown file
-          md_file.create_md_file()
-          EOF
+# Initialize repository
+repo = Repo('.')
+
+# Get all commits on the mbart-translation-implementation branch
+commits = list(repo.iter_commits('mbart-translation-implementation'))
+commits.reverse()  # Oldest first
+
+# Create markdown document
+md_file = MdUtils(file_name='DEVELOPMENT_HISTORY', title='CasaLingua Development History')
+
+# Add introduction
+md_file.new_paragraph("This document provides a comprehensive history of the development work done on the CasaLingua project, focusing on recent improvements to translation and anonymization functionality.")
+
+# Add timeline
+md_file.new_header(level=2, title='Development Timeline')
+
+# Add commit history as timeline
+for i, commit in enumerate(commits):
+  commit_date = datetime.datetime.fromtimestamp(commit.committed_date).strftime('%Y-%m-%d %H:%M:%S')
+  md_file.new_header(level=3, title=f'Phase {i+1}: {commit.summary}')
+  md_file.new_paragraph(f'**Date:** {commit_date}')
+  md_file.new_paragraph(f'**Author:** {commit.author.name}')
+  md_file.new_paragraph('**Changes:**')
+  
+  # Add commit message details
+  message_body = commit.message.split('\n\n', 1)
+  if len(message_body) > 1:
+      details = message_body[1].strip()
+      md_file.new_paragraph(details)
+  
+  # List changed files
+  changed_files = []
+  for item in commit.stats.files:
+      changed_files.append(item)
+  
+  if changed_files:
+      md_file.new_paragraph('**Files Changed:**')
+      for file in changed_files:
+          md_file.new_line(f'- `{file}`')
+
+# Add major features implemented
+md_file.new_header(level=2, title='Major Features Implemented')
+
+# MBART Translation Support
+md_file.new_header(level=3, title='MBART Translation Support')
+md_file.new_paragraph("Implementation of Facebook's MBART multilingual translation model support:")
+md_file.new_list([
+    "Added comprehensive language code mapping for all 50 languages supported by MBART",
+    "Implemented language token handling for proper MBART translation",
+    "Enhanced tokenization process for MBART's special requirements",
+    "Added source and target language token forcing for accurate translation"
+])
+
+# Anonymization Enhancements
+md_file.new_header(level=3, title='Anonymization Enhancements')
+md_file.new_paragraph("Improvements to the anonymization pipeline for better PII detection and handling:")
+md_file.new_list([
+    "Implemented deterministic anonymization for consistent results",
+    "Enhanced pattern detection for multiple languages (EN, ES, FR, DE)",
+    "Added realistic fake data generation for anonymized entities",
+    "Improved performance and consistency of entity detection"
+])
+
+# Integration of Orphaned Code
+md_file.new_header(level=3, title='Integration of Orphaned Code')
+md_file.new_paragraph("Connected previously unused utility functions to improve system functionality:")
+md_file.new_list([
+    "Integrated language pattern detection functions for better entity recognition",
+    "Enhanced deterministic random function for consistent anonymization",
+    "Fixed metrics collection for performance tracking"
+])
+
+# Testing
+md_file.new_header(level=3, title='Testing Infrastructure')
+md_file.new_paragraph("Added tests to verify functionality:")
+md_file.new_list([
+    "Created test script for MBART language code conversion",
+    "Implemented anonymization tests with different strategies",
+    "Verified consistency of results across multiple runs"
+])
+
+# Technical Architecture
+md_file.new_header(level=2, title='Technical Architecture')
+md_file.new_paragraph("The CasaLingua system combines multiple AI models and NLP techniques to provide comprehensive language processing capabilities:")
+
+# Core Components
+md_file.new_header(level=3, title='Core Components')
+md_file.new_list([
+    "**Translation Pipeline**: Handles multilingual translation using MBART and other models",
+    "**Anonymization Pipeline**: Detects and handles personally identifiable information",
+    "**Model Manager**: Centralized management of AI models with automatic loading",
+    "**Metrics Collection**: Performance tracking and monitoring"
+])
+
+# Save markdown file
+md_file.create_md_file()
+EOF
           
           python generate_history.py
           cat DEVELOPMENT_HISTORY.md

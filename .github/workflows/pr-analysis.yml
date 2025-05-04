@@ -82,8 +82,7 @@ ${uniqueCategories.map(cat => `- ${cat}`).join('\n')}
 ### Automated Test Status
 - Tests will be run automatically
 
-*This analysis was performed automatically by GitHub Actions.*
-`;
+*This analysis was performed automatically by GitHub Actions.*`;
             
             // Add comment to PR
             await github.rest.issues.createComment({

@@ -49,264 +49,264 @@ jobs:
           mkdir -p docs/{api,core,implementation}
           
           # Create index file
-          cat > docs/index.md << 'EOF'
-          # CasaLingua Documentation
-          
-          Welcome to the CasaLingua documentation. This site provides comprehensive information about the CasaLingua language processing platform.
-          
-          ## Overview
-          
-          CasaLingua is a comprehensive language processing platform that provides:
-          
-          - **Translation**: Multilingual translation with MBART and other models
-          - **Anonymization**: Detection and handling of personally identifiable information
-          - **Text Analysis**: Language detection, sentiment analysis, and more
-          - **Document Processing**: Handling of various document formats (PDF, DOCX)
-          
-          ## Recent Developments
-          
-          Recent development efforts have focused on:
-          
-          - Implementing MBART translation model support
-          - Enhancing anonymization capabilities
-          - Improving metrics collection
-          - Adding comprehensive testing
-          
-          ## Getting Started
-          
-          See the [Installation](installation.md) guide to get started with CasaLingua.
-          EOF
+          cat > docs/index.md << EOF
+# CasaLingua Documentation
+
+Welcome to the CasaLingua documentation. This site provides comprehensive information about the CasaLingua language processing platform.
+
+## Overview
+
+CasaLingua is a comprehensive language processing platform that provides:
+
+- **Translation**: Multilingual translation with MBART and other models
+- **Anonymization**: Detection and handling of personally identifiable information
+- **Text Analysis**: Language detection, sentiment analysis, and more
+- **Document Processing**: Handling of various document formats (PDF, DOCX)
+
+## Recent Developments
+
+Recent development efforts have focused on:
+
+- Implementing MBART translation model support
+- Enhancing anonymization capabilities
+- Improving metrics collection
+- Adding comprehensive testing
+
+## Getting Started
+
+See the [Installation](installation.md) guide to get started with CasaLingua.
+EOF
           
           # Create installation guide
-          cat > docs/installation.md << 'EOF'
-          # Installation Guide
-          
-          This guide will help you install and set up CasaLingua on your system.
-          
-          ## Prerequisites
-          
-          - Python 3.8 or higher
-          - 8GB RAM minimum (16GB recommended)
-          - 10GB disk space for models
-          
-          ## Installation Steps
-          
-          1. Clone the repository:
-          
-          ```bash
-          git clone https://github.com/yourusername/casalingua.git
-          cd casalingua
-          ```
-          
-          2. Create a virtual environment:
-          
-          ```bash
-          python -m venv venv
-          source venv/bin/activate  # On Windows: venv\Scripts\activate
-          ```
-          
-          3. Install dependencies:
-          
-          ```bash
-          pip install -r requirements.txt
-          ```
-          
-          4. Download required models:
-          
-          ```bash
-          python scripts/download_models.py --all
-          ```
-          
-          5. Run the server:
-          
-          ```bash
-          python -m app.main
-          ```
-          
-          ## Configuration
-          
-          See the [Configuration Guide](configuration.md) for details on how to configure CasaLingua.
-          EOF
+          cat > docs/installation.md << EOF
+# Installation Guide
+
+This guide will help you install and set up CasaLingua on your system.
+
+## Prerequisites
+
+- Python 3.8 or higher
+- 8GB RAM minimum (16GB recommended)
+- 10GB disk space for models
+
+## Installation Steps
+
+1. Clone the repository:
+
+\`\`\`bash
+git clone https://github.com/yourusername/casalingua.git
+cd casalingua
+\`\`\`
+
+2. Create a virtual environment:
+
+\`\`\`bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+\`\`\`
+
+3. Install dependencies:
+
+\`\`\`bash
+pip install -r requirements.txt
+\`\`\`
+
+4. Download required models:
+
+\`\`\`bash
+python scripts/download_models.py --all
+\`\`\`
+
+5. Run the server:
+
+\`\`\`bash
+python -m app.main
+\`\`\`
+
+## Configuration
+
+See the [Configuration Guide](configuration.md) for details on how to configure CasaLingua.
+EOF
           
           # Create MBART implementation details
-          cat > docs/implementation/mbart.md << 'EOF'
-          # MBART Translation Implementation
-          
-          This document details the implementation of Facebook's MBART model for multilingual translation in CasaLingua.
-          
-          ## MBART Overview
-          
-          MBART (Multilingual BART) is a sequence-to-sequence denoising auto-encoder pretrained on large-scale monolingual corpora in many languages using the BART objective. It's specifically designed for multilingual machine translation.
-          
-          ## Language Code Handling
-          
-          MBART uses special language code formats:
-          
-          - English: `en_XX`
-          - Spanish: `es_XX`
-          - French: `fr_XX`
-          - German: `de_DE`
-          
-          CasaLingua implements a comprehensive mapping between ISO 639-1 language codes and MBART-specific formats.
-          
-          ## Implementation Details
-          
-          The implementation includes:
-          
-          1. **Language Code Conversion**: ISO 639-1 to MBART format
-          2. **Source Language Tokens**: Setting proper source language for tokenization
-          3. **Target Language Forcing**: Using forced_bos_token_id for target language
-          4. **Model Detection**: Automatic detection of MBART models for appropriate handling
-          
-          ## Code Examples
-          
-          ### Language Code Conversion
-          
-          ```python
-          def _get_mbart_language_code(self, language_code: str) -> str:
-              """Convert ISO 639-1 language code to MBART format."""
-              if not language_code or language_code not in self.mbart_language_codes:
-                  return "en_XX"  # Default to English
-              return self.mbart_language_codes[language_code]
-          ```
-          
-          ### Model Processing
-          
-          ```python
-          # For MBART models, set source language for tokenizer
-          if mbart_source_lang and hasattr(self.tokenizer, "set_src_lang_special_tokens"):
-              self.tokenizer.set_src_lang_special_tokens(mbart_source_lang)
-              
-          # For MBART models, set target language for generation
-          if is_mbart and "mbart_target_lang" in preprocessed:
-              mbart_target_lang = preprocessed["mbart_target_lang"]
-              if mbart_target_lang and hasattr(self.tokenizer, "lang_code_to_id"):
-                  gen_kwargs["forced_bos_token_id"] = self.tokenizer.lang_code_to_id[mbart_target_lang]
-          ```
-          EOF
+          cat > docs/implementation/mbart.md << EOF
+# MBART Translation Implementation
+
+This document details the implementation of Facebook's MBART model for multilingual translation in CasaLingua.
+
+## MBART Overview
+
+MBART (Multilingual BART) is a sequence-to-sequence denoising auto-encoder pretrained on large-scale monolingual corpora in many languages using the BART objective. It's specifically designed for multilingual machine translation.
+
+## Language Code Handling
+
+MBART uses special language code formats:
+
+- English: \`en_XX\`
+- Spanish: \`es_XX\`
+- French: \`fr_XX\`
+- German: \`de_DE\`
+
+CasaLingua implements a comprehensive mapping between ISO 639-1 language codes and MBART-specific formats.
+
+## Implementation Details
+
+The implementation includes:
+
+1. **Language Code Conversion**: ISO 639-1 to MBART format
+2. **Source Language Tokens**: Setting proper source language for tokenization
+3. **Target Language Forcing**: Using forced_bos_token_id for target language
+4. **Model Detection**: Automatic detection of MBART models for appropriate handling
+
+## Code Examples
+
+### Language Code Conversion
+
+\`\`\`python
+def _get_mbart_language_code(self, language_code: str) -> str:
+    """Convert ISO 639-1 language code to MBART format."""
+    if not language_code or language_code not in self.mbart_language_codes:
+        return "en_XX"  # Default to English
+    return self.mbart_language_codes[language_code]
+\`\`\`
+
+### Model Processing
+
+\`\`\`python
+# For MBART models, set source language for tokenizer
+if mbart_source_lang and hasattr(self.tokenizer, "set_src_lang_special_tokens"):
+    self.tokenizer.set_src_lang_special_tokens(mbart_source_lang)
+    
+# For MBART models, set target language for generation
+if is_mbart and "mbart_target_lang" in preprocessed:
+    mbart_target_lang = preprocessed["mbart_target_lang"]
+    if mbart_target_lang and hasattr(self.tokenizer, "lang_code_to_id"):
+        gen_kwargs["forced_bos_token_id"] = self.tokenizer.lang_code_to_id[mbart_target_lang]
+\`\`\`
+EOF
           
           # Create anonymization implementation details
-          cat > docs/implementation/anonymization.md << 'EOF'
-          # Anonymization Implementation
-          
-          This document details the implementation of anonymization capabilities in CasaLingua.
-          
-          ## Overview
-          
-          The anonymization pipeline detects and handles personally identifiable information (PII) in text using a combination of:
-          
-          1. Machine learning models for entity recognition
-          2. Pattern-based detection with regular expressions
-          3. Domain-specific vocabulary for specialized fields
-          
-          ## Anonymization Strategies
-          
-          CasaLingua supports multiple anonymization strategies:
-          
-          - **Mask**: Replace entities with type indicators (e.g., [PERSON])
-          - **Redact**: Replace entities with character masks (e.g., XXXXX)
-          - **Pseudonymize**: Replace entities with realistic but fake data
-          
-          ## Implementation Details
-          
-          The implementation includes:
-          
-          1. **Deterministic Anonymization**: Ensuring consistent replacements for the same entities
-          2. **Multilingual Pattern Detection**: Support for multiple languages (EN, ES, FR, DE)
-          3. **Realistic Fake Data**: Generation of plausible replacement data
-          4. **Entity Classification**: Proper categorization of different PII types
-          
-          ## Code Examples
-          
-          ### Deterministic Random Generation
-          
-          ```python
-          def _deterministic_random(self, max_value: int, seed_text: str = None) -> int:
-              """Generate a deterministic random number based on entity text."""
-              if seed_text is None:
-                  if not hasattr(self, '_random_counter'):
-                      self._random_counter = 0
-                  self._random_counter += 1
-                  seed_text = f"{id(self)}_{self._random_counter}"
-              
-              import hashlib
-              hash_obj = hashlib.md5(seed_text.encode('utf-8'))
-              hash_value = int(hash_obj.hexdigest(), 16)
-              
-              return hash_value % max_value
-          ```
-          
-          ### Entity Replacement
-          
-          ```python
-          def _get_replacement(self, original, entity_type, strategy):
-              """Generate a replacement for the identified entity."""
-              # Strategy: mask - Replace with a generic placeholder
-              if strategy == "mask":
-                  return f"[{entity_type}]"
-              
-              # Strategy: redact - Replace with fixed length mask
-              elif strategy == "redact":
-                  return "X" * len(original)
-              
-              # Strategy: pseudonymize - Replace with realistic fake data
-              elif strategy == "pseudonymize":
-                  # Use the entity text as a seed for deterministic generation
-                  import hashlib
-                  seed = hashlib.md5(original.encode('utf-8')).hexdigest()
-                  seed_number = int(seed, 16)
-                  
-                  # Generate appropriate replacement based on entity type
-                  if entity_type in ["PER", "PERSON", "NAME"]:
-                      # Generate a name
-                      return generate_fake_name(seed_number)
-                  # Other entity types...
-          ```
-          EOF
+          cat > docs/implementation/anonymization.md << EOF
+# Anonymization Implementation
+
+This document details the implementation of anonymization capabilities in CasaLingua.
+
+## Overview
+
+The anonymization pipeline detects and handles personally identifiable information (PII) in text using a combination of:
+
+1. Machine learning models for entity recognition
+2. Pattern-based detection with regular expressions
+3. Domain-specific vocabulary for specialized fields
+
+## Anonymization Strategies
+
+CasaLingua supports multiple anonymization strategies:
+
+- **Mask**: Replace entities with type indicators (e.g., [PERSON])
+- **Redact**: Replace entities with character masks (e.g., XXXXX)
+- **Pseudonymize**: Replace entities with realistic but fake data
+
+## Implementation Details
+
+The implementation includes:
+
+1. **Deterministic Anonymization**: Ensuring consistent replacements for the same entities
+2. **Multilingual Pattern Detection**: Support for multiple languages (EN, ES, FR, DE)
+3. **Realistic Fake Data**: Generation of plausible replacement data
+4. **Entity Classification**: Proper categorization of different PII types
+
+## Code Examples
+
+### Deterministic Random Generation
+
+\`\`\`python
+def _deterministic_random(self, max_value: int, seed_text: str = None) -> int:
+    """Generate a deterministic random number based on entity text."""
+    if seed_text is None:
+        if not hasattr(self, '_random_counter'):
+            self._random_counter = 0
+        self._random_counter += 1
+        seed_text = f"{id(self)}_{self._random_counter}"
+    
+    import hashlib
+    hash_obj = hashlib.md5(seed_text.encode('utf-8'))
+    hash_value = int(hash_obj.hexdigest(), 16)
+    
+    return hash_value % max_value
+\`\`\`
+
+### Entity Replacement
+
+\`\`\`python
+def _get_replacement(self, original, entity_type, strategy):
+    """Generate a replacement for the identified entity."""
+    # Strategy: mask - Replace with a generic placeholder
+    if strategy == "mask":
+        return f"[{entity_type}]"
+    
+    # Strategy: redact - Replace with fixed length mask
+    elif strategy == "redact":
+        return "X" * len(original)
+    
+    # Strategy: pseudonymize - Replace with realistic fake data
+    elif strategy == "pseudonymize":
+        # Use the entity text as a seed for deterministic generation
+        import hashlib
+        seed = hashlib.md5(original.encode('utf-8')).hexdigest()
+        seed_number = int(seed, 16)
+        
+        # Generate appropriate replacement based on entity type
+        if entity_type in ["PER", "PERSON", "NAME"]:
+            # Generate a name
+            return generate_fake_name(seed_number)
+        # Other entity types...
+\`\`\`
+EOF
           
           # Create mkdocs.yml configuration
-          cat > mkdocs.yml << 'EOF'
-          site_name: CasaLingua Documentation
-          site_description: Documentation for the CasaLingua language processing platform
-          site_author: CasaLingua Team
-          
-          theme:
-            name: material
-            palette:
-              primary: indigo
-              accent: indigo
-            features:
-              - navigation.tabs
-              - navigation.sections
-              - toc.integrate
-              - search.suggest
-              - search.highlight
-              - content.code.copy
-          
-          markdown_extensions:
-            - pymdownx.highlight
-            - pymdownx.superfences
-            - pymdownx.inlinehilite
-            - pymdownx.tabbed
-            - pymdownx.critic
-            - pymdownx.tasklist:
-                custom_checkbox: true
-            - admonition
-            - toc:
-                permalink: true
-          
-          nav:
-            - Home: index.md
-            - Getting Started:
-              - Installation: installation.md
-            - Implementation:
-              - MBART Translation: implementation/mbart.md
-              - Anonymization: implementation/anonymization.md
-            - Development:
-              - Development History: DEVELOPMENT_HISTORY.md
-            - API Reference:
-              - Overview: api/overview.md
-          EOF
+          cat > mkdocs.yml << EOF
+site_name: CasaLingua Documentation
+site_description: Documentation for the CasaLingua language processing platform
+site_author: CasaLingua Team
+
+theme:
+  name: material
+  palette:
+    primary: indigo
+    accent: indigo
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed
+  - pymdownx.critic
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - admonition
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: installation.md
+  - Implementation:
+    - MBART Translation: implementation/mbart.md
+    - Anonymization: implementation/anonymization.md
+  - Development:
+    - Development History: DEVELOPMENT_HISTORY.md
+  - API Reference:
+    - Overview: api/overview.md
+EOF
           
           # Check if DEVELOPMENT_HISTORY.md exists, create placeholder if not
           if [ ! -f docs/DEVELOPMENT_HISTORY.md ]; then
@@ -316,85 +316,85 @@ jobs:
           
           # Create API overview placeholder
           mkdir -p docs/api
-          cat > docs/api/overview.md << 'EOF'
-          # API Overview
-          
-          CasaLingua provides a RESTful API for accessing language processing capabilities.
-          
-          ## Authentication
-          
-          API requests require authentication using an API key or JWT token.
-          
-          ## Endpoints
-          
-          ### Translation
-          
-          `POST /api/translate`
-          
-          Translates text from one language to another.
-          
-          **Request:**
-          
-          ```json
-          {
-            "text": "Hello world",
-            "source_language": "en",
-            "target_language": "es",
-            "model_name": "translation_model"
-          }
-          ```
-          
-          **Response:**
-          
-          ```json
-          {
-            "source_text": "Hello world",
-            "translated_text": "Hola mundo",
-            "source_language": "en",
-            "target_language": "es",
-            "confidence": 0.98,
-            "model_used": "translation_model"
-          }
-          ```
-          
-          ### Anonymization
-          
-          `POST /api/anonymize`
-          
-          Anonymizes personally identifiable information in text.
-          
-          **Request:**
-          
-          ```json
-          {
-            "text": "John Smith lives at 123 Main St.",
-            "language": "en",
-            "strategy": "mask"
-          }
-          ```
-          
-          **Response:**
-          
-          ```json
-          {
-            "text": "[PERSON] lives at [ADDRESS].",
-            "entities": [
-              {
-                "type": "PERSON",
-                "text": "John Smith",
-                "start": 0,
-                "end": 10
-              },
-              {
-                "type": "ADDRESS",
-                "text": "123 Main St.",
-                "start": 20,
-                "end": 33
-              }
-            ]
-          }
-          ```
-          EOF
+          cat > docs/api/overview.md << EOF
+# API Overview
+
+CasaLingua provides a RESTful API for accessing language processing capabilities.
+
+## Authentication
+
+API requests require authentication using an API key or JWT token.
+
+## Endpoints
+
+### Translation
+
+\`POST /api/translate\`
+
+Translates text from one language to another.
+
+**Request:**
+
+\`\`\`json
+{
+  "text": "Hello world",
+  "source_language": "en",
+  "target_language": "es",
+  "model_name": "translation_model"
+}
+\`\`\`
+
+**Response:**
+
+\`\`\`json
+{
+  "source_text": "Hello world",
+  "translated_text": "Hola mundo",
+  "source_language": "en",
+  "target_language": "es",
+  "confidence": 0.98,
+  "model_used": "translation_model"
+}
+\`\`\`
+
+### Anonymization
+
+\`POST /api/anonymize\`
+
+Anonymizes personally identifiable information in text.
+
+**Request:**
+
+\`\`\`json
+{
+  "text": "John Smith lives at 123 Main St.",
+  "language": "en",
+  "strategy": "mask"
+}
+\`\`\`
+
+**Response:**
+
+\`\`\`json
+{
+  "text": "[PERSON] lives at [ADDRESS].",
+  "entities": [
+    {
+      "type": "PERSON",
+      "text": "John Smith",
+      "start": 0,
+      "end": 10
+    },
+    {
+      "type": "ADDRESS",
+      "text": "123 Main St.",
+      "start": 20,
+      "end": 33
+    }
+  ]
+}
+\`\`\`
+EOF
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
