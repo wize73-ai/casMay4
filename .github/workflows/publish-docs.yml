@@ -11,8 +11,10 @@ on:
   # Allow manual trigger
   workflow_dispatch:
 
+# These permissions are needed for creating docs, but won't deploy to GitHub Pages
+# until the repository has Pages enabled and configured
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -400,18 +402,50 @@ jobs:
       - name: Build with MkDocs
         run: mkdocs build
 
-      - name: Upload artifact
+      - name: Upload docs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-site
+          path: ./site
+          
+      # This step will only succeed if GitHub Pages is enabled
+      # If it fails, the workflow will continue and just build the docs as an artifact
+      - name: Upload pages artifact (if GitHub Pages enabled)
         uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
         with:
           path: ./site
 
+  # This job will only run if GitHub Pages is properly enabled for the repository
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ !failure() && !cancelled() }}
     steps:
+      - name: Check if GitHub Pages is enabled
+        id: check_pages
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              const pages = await github.rest.repos.getPages({
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+              console.log('GitHub Pages is enabled for this repository');
+              return true;
+            } catch (error) {
+              console.log('GitHub Pages is not enabled for this repository');
+              return false;
+            }
+      
       - name: Deploy to GitHub Pages
         id: deployment
+        if: ${{ steps.check_pages.outputs.result == 'true' }}
         uses: actions/deploy-pages@v4
+        continue-on-error: true
