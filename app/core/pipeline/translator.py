@@ -407,7 +407,8 @@ class TranslationPipeline:
         formality: Optional[str] = None,
         verify: bool = False,
         user_id: Optional[str] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        use_fallback: bool = True
     ) -> Dict[str, Any]:
         """
         Unified entry point for translation requests from the processor.
@@ -423,35 +424,168 @@ class TranslationPipeline:
             verify: Whether to verify translation
             user_id: Optional user ID for tracking
             request_id: Optional request ID for tracking
+            use_fallback: Whether to use fallback mechanism when primary model fails
             
         Returns:
             Dict with translation results
         """
-        # Create translation request
-        request = TranslationRequest(
-            text=text,
-            source_language=source_language,
-            target_language=target_language,
-            model_name=model_id,  # Using model_name instead of model_id to match schema
-            glossary_id=glossary_id,
-            preserve_formatting=preserve_formatting,
-            formality=formality,
-            context=[],  # No context in simplified interface
-            domain=None  # No domain in simplified interface
-        )
+        # If no model_id provided or if it's explicitly set to mt5, use MBART instead
+        if model_id is None or model_id == "mt5_translation":
+            # Get MBART language codes
+            mbart_source_lang = self._get_mbart_language_code(source_language)
+            mbart_target_lang = self._get_mbart_language_code(target_language)
+            
+            # Use MBART as primary model
+            logger.info(f"Using MBART as primary translation model for {source_language} to {target_language}")
+            model_id = "mbart_translation"
+            
+            # Create translation request with MBART specific parameters
+            request = TranslationRequest(
+                text=text,
+                source_language=source_language,
+                target_language=target_language,
+                model_name=model_id,
+                glossary_id=glossary_id,
+                preserve_formatting=preserve_formatting,
+                formality=formality,
+                context=[],  # No context in simplified interface
+                domain=None,  # No domain in simplified interface
+                parameters={
+                    "mbart_source_lang": mbart_source_lang,
+                    "mbart_target_lang": mbart_target_lang,
+                    "primary": True
+                }
+            )
+        else:
+            # Use the specified model
+            logger.info(f"Using specified model {model_id} for translation from {source_language} to {target_language}")
+            request = TranslationRequest(
+                text=text,
+                source_language=source_language,
+                target_language=target_language,
+                model_name=model_id,
+                glossary_id=glossary_id,
+                preserve_formatting=preserve_formatting,
+                formality=formality,
+                context=[],  # No context in simplified interface
+                domain=None  # No domain in simplified interface
+            )
         
         # Process the translation
         result = await self.translate(request)
         
+        # Check if the translation was successful
+        if model_id != "mbart_translation" and use_fallback and self._is_poor_quality_translation(result.translated_text, text):
+            logger.warning(f"Primary translation model produced poor quality result, attempting fallback for {source_language} to {target_language}")
+            
+            # Try fallback with MBART model
+            try:
+                # Get MBART language codes
+                mbart_source_lang = self._get_mbart_language_code(source_language)
+                mbart_target_lang = self._get_mbart_language_code(target_language)
+                
+                # Create fallback request with MBART-specific parameters
+                fallback_request = TranslationRequest(
+                    text=text,
+                    source_language=source_language,
+                    target_language=target_language,
+                    model_name="mbart_translation",  # Use MBART model specifically
+                    glossary_id=glossary_id,
+                    preserve_formatting=preserve_formatting,
+                    formality=formality,
+                    parameters={
+                        "mbart_source_lang": mbart_source_lang,
+                        "mbart_target_lang": mbart_target_lang,
+                        "fallback": True
+                    }
+                )
+                
+                # Try translation with MBART
+                logger.info(f"Attempting fallback translation with MBART from {source_language} to {target_language}")
+                fallback_result = await self.translate(fallback_request)
+                
+                if not self._is_poor_quality_translation(fallback_result.translated_text, text):
+                    logger.info("Fallback translation succeeded with better quality")
+                    result = fallback_result
+                    result.used_fallback = True
+                else:
+                    logger.warning("Fallback translation also produced poor quality result")
+            except Exception as e:
+                logger.error(f"Error during fallback translation: {str(e)}", exc_info=True)
+                # Continue with original result even if fallback failed
+        
         # Return as dictionary for compatibility
-        return {
+        response = {
             "translated_text": result.translated_text,
             "source_language": result.source_language,
             "target_language": result.target_language,
             "confidence": result.confidence,
-            "model_used": result.model_used,
+            "model_used": result.model_used if model_id != "mbart_translation" else "mbart_translation",
             "request_id": request_id
         }
+        
+        # Add information about using MBART as primary model
+        if model_id == "mbart_translation":
+            response["primary_model"] = "mbart_translation"
+        
+        # Add information about fallback if it was used
+        if hasattr(result, 'used_fallback') and result.used_fallback:
+            response["used_fallback"] = True
+            response["fallback_model"] = "mbart_translation"
+        
+        return response
+        
+    def _is_poor_quality_translation(self, translation: str, original_text: str) -> bool:
+        """
+        Check if a translation appears to be of poor quality.
+        
+        Args:
+            translation: The translated text
+            original_text: The original source text
+            
+        Returns:
+            Boolean indicating if the translation is poor quality
+        """
+        import re
+        
+        # Check for empty translations
+        if not translation or not translation.strip():
+            return True
+        
+        # Check if it's our placeholder
+        if translation == "[Translation not available]":
+            return True
+        
+        # Check if it's just repeating the source language text
+        if original_text.strip() == translation.strip():
+            return True
+        
+        # Check for too short translations (unless source was also short)
+        if len(translation) < 10 and len(original_text) > 20:
+            return True
+        
+        # Check for hallucinations - if it contains language codes
+        if re.search(r'\b[a-z]{2}\s+[a-z]{2}\b', translation):
+            return True
+        
+        # Check for special tokens that might have leaked into the output
+        if "<extra_id_" in translation or "</s>" in translation or "<pad>" in translation:
+            return True
+        
+        # Check for severe token repetition
+        words = translation.split()
+        if len(words) >= 4:
+            # Check for repeated sequences of words
+            repeated_patterns = 0
+            for j in range(len(words) - 3):
+                pattern = " ".join(words[j:j+2])
+                if pattern in " ".join(words[j+2:]):
+                    repeated_patterns += 1
+            
+            if repeated_patterns > 2:  # Multiple repeated patterns suggest hallucination
+                return True
+        
+        return False
     
     def _load_domain_vocabulary(self, vocabulary_path: str) -> None:
         """

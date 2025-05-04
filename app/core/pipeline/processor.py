@@ -124,6 +124,7 @@ class UnifiedProcessor:
             registry_config=self.registry_config
         )
         await self.translation_pipeline.initialize()
+        logger.debug("Translation pipeline initialized successfully")
         logger.info("Translation pipeline initialization complete")
         
     async def _initialize_simplification_pipeline(self) -> None:
@@ -1166,7 +1167,8 @@ class UnifiedProcessor:
         formality: Optional[str] = None,
         verify: bool = False,
         user_id: Optional[str] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        use_mbart: bool = True  # Default to using MBART
     ) -> Dict[str, Any]:
         """
         Handle translation using the translation pipeline component.
@@ -1182,6 +1184,7 @@ class UnifiedProcessor:
             verify: Whether to verify translation
             user_id: Optional user ID for tracking
             request_id: Optional request ID for tracking
+            use_mbart: Whether to use MBART as the primary model
             
         Returns:
             Dict with translation results
@@ -1191,6 +1194,11 @@ class UnifiedProcessor:
             
         if not self.translation_pipeline:
             raise RuntimeError("Translation pipeline not initialized")
+
+        # If use_mbart is True and no specific model is requested, use MBART
+        if use_mbart and model_id is None:
+            model_id = "mbart_translation"
+            logger.info(f"Using MBART as primary translation model for request {request_id}")
 
         result = await self.translation_pipeline.translate_text(
             text=text,
@@ -1211,14 +1219,35 @@ class UnifiedProcessor:
         else:
             logger.info(f"Translation successful for request {request_id}")
 
-        return {
+        # Create a result dictionary with all required fields
+        result_dict = {
             "source_text": text,
             "translated_text": translated,
-            "source_language": source_language,
+            "source_language": source_language or "auto",
             "target_language": target_language,
             "confidence": result.get("confidence", 1.0),
-            "model_id": result.get("model_used", "default")
+            "model_id": result.get("model_used", "default"),
+            "model_used": result.get("model_used", "translation"),
+            "word_count": len(text.split()),
+            "character_count": len(text),
+            "process_time": 0.0,
+            "verified": False,
+            "verification_score": None,
+            "detected_language": None
         }
+        
+        # Add info about primary model
+        if result.get("primary_model"):
+            result_dict["primary_model"] = result.get("primary_model")
+            
+        # Add info about fallback model if used
+        if result.get("used_fallback"):
+            result_dict["used_fallback"] = True
+            result_dict["fallback_model"] = result.get("fallback_model")
+        
+        logger.debug(f"Translation result: {result_dict}")
+        
+        return result_dict
         
     async def process_batch_translation(
         self,
@@ -1231,7 +1260,8 @@ class UnifiedProcessor:
         formality: Optional[str] = None,
         verify: bool = False,
         user_id: Optional[str] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        use_mbart: bool = True  # Default to using MBART
     ) -> List[Dict[str, Any]]:
         """
         Handle batch translation of multiple texts concurrently.
@@ -1247,6 +1277,7 @@ class UnifiedProcessor:
             verify: Whether to verify translation
             user_id: Optional user ID for tracking
             request_id: Optional request ID for tracking
+            use_mbart: Whether to use MBART as the primary model
             
         Returns:
             List of dicts with translation results
@@ -1261,6 +1292,11 @@ class UnifiedProcessor:
             raise RuntimeError("Translation pipeline not initialized")
             
         logger.info(f"Processing batch translation of {len(texts)} texts")
+        
+        # If use_mbart is True and no specific model is requested, use MBART
+        if use_mbart and model_id is None:
+            model_id = "mbart_translation"
+            logger.info(f"Using MBART as primary translation model for batch request {request_id}")
         
         # Check if translation pipeline supports native batch processing
         if hasattr(self.translation_pipeline, "translate_batch") and callable(
@@ -1300,7 +1336,8 @@ class UnifiedProcessor:
                 formality=formality,
                 verify=verify,
                 user_id=user_id,
-                request_id=text_request_id
+                request_id=text_request_id,
+                use_mbart=use_mbart
             ))
         
         # Execute all translation tasks concurrently

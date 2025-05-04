@@ -244,12 +244,20 @@ class TranslationModelWrapper(BaseModelWrapper):
         mbart_source_lang = parameters.get("mbart_source_lang")
         mbart_target_lang = parameters.get("mbart_target_lang")
         
+        # Determine if we're using MBART or MT5 model
         is_mbart = (self.model.__class__.__name__ == "MBartForConditionalGeneration" or 
                     (hasattr(self.model, "config") and 
                      hasattr(self.model.config, "model_type") and 
                      getattr(self.model.config, "model_type", "") == "mbart"))
+                     
+        is_mt5 = (self.model.__class__.__name__ == "MT5ForConditionalGeneration" or 
+                 (hasattr(self.model, "config") and 
+                  hasattr(self.model.config, "model_type") and 
+                  getattr(self.model.config, "model_type", "") == "mt5"))
         
-        # Determine if we're using MBART model
+        logger.debug(f"Model type detection: is_mbart={is_mbart}, is_mt5={is_mt5}")
+        
+        # Handle MBART model specially
         if is_mbart:
             logger.debug(f"Detected MBART model, using special language token handling")
             
@@ -281,18 +289,63 @@ class TranslationModelWrapper(BaseModelWrapper):
                     "mbart_source_lang": mbart_source_lang,
                     "mbart_target_lang": mbart_target_lang,
                     "original_texts": texts,
-                    "is_mbart": True
+                    "is_mbart": True,
+                    "is_mt5": False
                 }
             else:
                 # Fall back to regular processing if tokenizer not available
                 logger.warning("MBART model detected but tokenizer not available")
+                
+        # Handle MT5 model specially
+        elif is_mt5:
+            logger.debug(f"Detected MT5 model, using special prefix format")
+            
+            # MT5 models typically use a target language prefix for translation
+            # Format: "translate [source] to [target]: [text]"
+            prompts = []
+            for text in texts:
+                prompt = f"translate {source_lang} to {target_lang}: {text}"
+                prompts.append(prompt)
+            
+            logger.debug(f"MT5 translation prompts: {prompts}")
+            
+            # Tokenize inputs
+            if self.tokenizer:
+                inputs = self.tokenizer(
+                    prompts, 
+                    return_tensors="pt", 
+                    padding=True, 
+                    truncation=True,
+                    max_length=self.config.get("max_length", 512)
+                )
+                
+                # Move to device
+                for key in inputs:
+                    if isinstance(inputs[key], torch.Tensor):
+                        inputs[key] = inputs[key].to(self.device)
+                
+                logger.debug(f"MT5 tokenized input shapes: {', '.join([f'{k}: {v.shape}' for k, v in inputs.items() if isinstance(v, torch.Tensor)])}")
+            else:
+                inputs = {"texts": prompts}
+            
+            return {
+                "inputs": inputs,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "original_texts": texts,
+                "is_mbart": False,
+                "is_mt5": True,
+                "prompts": prompts  # Store the prompts for debugging
+            }
         
-        # Standard processing for non-MBART models
+        # Standard processing for other models
         # Prepare translation prompt
         prompts = []
         for text in texts:
             prompt = f"translate from {source_lang} to {target_lang}: {text}"
             prompts.append(prompt)
+        
+        logger.debug(f"Standard translation prompts: {prompts}")
         
         # Tokenize inputs
         if self.tokenizer:
@@ -316,13 +369,16 @@ class TranslationModelWrapper(BaseModelWrapper):
             "source_lang": source_lang,
             "target_lang": target_lang,
             "original_texts": texts,
-            "is_mbart": False
+            "is_mbart": False,
+            "is_mt5": False,
+            "prompts": prompts  # Store the prompts for debugging
         }
     
     def _run_inference(self, preprocessed: Dict[str, Any]) -> Any:
         """Run translation inference"""
         inputs = preprocessed["inputs"]
         is_mbart = preprocessed.get("is_mbart", False)
+        is_mt5 = preprocessed.get("is_mt5", False)
         
         # For transformers models
         if hasattr(self.model, "generate") and callable(self.model.generate):
@@ -348,13 +404,44 @@ class TranslationModelWrapper(BaseModelWrapper):
                     except KeyError:
                         logger.warning(f"Language code {mbart_target_lang} not found in MBART tokenizer")
             
-            # Generate translations
-            outputs = self.model.generate(
-                **inputs,
-                **gen_kwargs
-            )
+            # For MT5 models
+            if is_mt5:
+                # MT5 doesn't expect 'texts' in generate
+                if "texts" in inputs:
+                    inputs = {k: v for k, v in inputs.items() if k != "texts"}
+                
+                # Add MT5-specific generation parameters
+                if "do_sample" not in gen_kwargs:
+                    gen_kwargs["do_sample"] = False
+                
+                # Set a minimum length for MT5 outputs to avoid empty translations
+                if "min_length" not in gen_kwargs:
+                    gen_kwargs["min_length"] = 10
+                
+                # For debugging, log the prompts and generation params
+                logger.debug(f"MT5 prompts: {preprocessed.get('prompts', [])}")
+                logger.debug(f"MT5 generation parameters: {gen_kwargs}")
             
-            return outputs
+            # For debugging
+            logger.debug(f"Model input shapes: {', '.join([f'{k}: {v.shape}' for k, v in inputs.items() if isinstance(v, torch.Tensor)])}")
+            logger.debug(f"Generation parameters: {gen_kwargs}")
+            
+            try:
+                # Generate translations
+                outputs = self.model.generate(
+                    **inputs,
+                    **gen_kwargs
+                )
+                logger.debug(f"Generated output shape: {outputs.shape}")
+                return outputs
+            except Exception as e:
+                logger.error(f"Error during model generation: {str(e)}", exc_info=True)
+                # Return an empty output as fallback
+                if is_mt5:
+                    logger.warning("MT5 generation failed, returning empty output")
+                    # Create a dummy output with a special token indicating an error
+                    return torch.tensor([[self.tokenizer.pad_token_id]])
+                raise  # Re-raise for other models
         
         # For custom models
         elif hasattr(self.model, "translate") and callable(self.model.translate):
@@ -369,28 +456,371 @@ class TranslationModelWrapper(BaseModelWrapper):
     
     def _postprocess(self, model_output: Any, input_data: ModelInput) -> ModelOutput:
         """Postprocess translation output"""
-        if self.tokenizer and hasattr(self.tokenizer, "batch_decode"):
-            # Decode outputs
-            translations = self.tokenizer.batch_decode(
-                model_output, 
-                skip_special_tokens=True
-            )
+        # Check if the input is a torch tensor and convert to a list of decoded outputs
+        if isinstance(model_output, torch.Tensor) and self.tokenizer and hasattr(self.tokenizer, "batch_decode"):
+            # Log the output shape and values for debugging
+            logger.debug(f"Postprocessing model output shape: {model_output.shape}")
+            
+            try:
+                # Decode outputs
+                translations = self.tokenizer.batch_decode(
+                    model_output, 
+                    skip_special_tokens=True
+                )
+                logger.debug(f"Decoded translations: {translations}")
+            except Exception as e:
+                logger.error(f"Error decoding model output: {str(e)}", exc_info=True)
+                translations = ["[Error decoding translation]"]
         else:
             # Output already in text format
             translations = model_output
+            logger.debug(f"Non-tensor output type: {type(model_output)}")
+        
+        # Check if this is an MT5 model
+        is_mt5 = (self.model.__class__.__name__ == "MT5ForConditionalGeneration" or 
+                 (hasattr(self.model, "config") and 
+                  hasattr(self.model.config, "model_type") and 
+                  getattr(self.model.config, "model_type", "") == "mt5"))
+        
+        # Keep track of whether we needed to fall back to MBART
+        used_mbart_fallback = False
+        mbart_translations = None
+        original_mt5_translations = None
+        
+        logger.debug(f"Processing MT5 model: {is_mt5}")
+        
+        # Clean up MT5 special tokens if present
+        if is_mt5 and translations:
+            # Store the original MT5 translations before processing for debugging
+            original_mt5_translations = translations.copy() if isinstance(translations, list) else [str(translations)]
+            
+            # Process each translation
+            for i, translation in enumerate(translations):
+                logger.debug(f"Original MT5 translation {i}: '{translation}'")
+                
+                # MT5 has serious hallucination issues - sometimes it produces severely garbled text
+                # Let's do a more aggressive cleanup
+                
+                # 1. Remove all special tokens including <extra_id_N>
+                if isinstance(translation, str):
+                    # Match all <extra_id_N> tokens with regex
+                    import re
+                    translation = re.sub(r'<extra_id_\d+>', '', translation)
+                    
+                    # Remove any other special tokens
+                    special_tokens_to_remove = ["</s>", "<pad>", "<unk>", "困り", "уланулан", "困り", ". )"]
+                    for token in special_tokens_to_remove:
+                        translation = translation.replace(token, "")
+                    
+                    # Remove any language indicators like "en es en es en es"
+                    translation = re.sub(r'\b([a-z]{2})\s+([a-z]{2})\b(\s+[a-z]{2}\s+[a-z]{2})*', '', translation)
+                
+                    # 2. Remove repeated translate instructions
+                    translation = re.sub(r'(translate .* to .*:).*?\1', r'\1', translation)
+                    
+                    # 3. Remove prompt text patterns
+                    prefixes = [
+                        f"translate {input_data.source_language} to {input_data.target_language}:", 
+                        "translate to:", 
+                        f"translate {input_data.source_language} to {input_data.target_language}",
+                        f"translate {input_data.source_language} to:",
+                        "translate from",
+                        "translation:",
+                        f"{input_data.source_language} to {input_data.target_language}:",
+                        f"{input_data.source_language} {input_data.target_language}",
+                        f"Translate {input_data.source_language} to {input_data.target_language}:"
+                    ]
+                    
+                    for prefix in prefixes:
+                        if translation.startswith(prefix):
+                            translation = translation[len(prefix):].strip()
+                        # Also remove it from middle of text
+                        translation = translation.replace(prefix, " ")
+                    
+                    # 4. If the output repeats the input, try to remove the input text
+                    if input_data.text in translation:
+                        parts = translation.split(input_data.text, 1)
+                        if len(parts) > 1 and len(parts[1].strip()) > 0:
+                            translation = parts[1].strip()
+                    
+                    # 5. Remove excessive punctuation
+                    translation = re.sub(r'([,.?!:;])\1+', r'\1', translation)
+                    
+                    # 6. Final trimming
+                    translation = translation.strip()
+                    
+                    # Update the translation
+                    translations[i] = translation
+                    
+                # Function to check if this is a poor quality translation
+                def is_poor_quality_translation(text):
+                    if not text or (isinstance(text, str) and not text.strip()):
+                        return True
+                    
+                    # Check if it's our placeholder
+                    if text == "[Translation not available]":
+                        return True
+                    
+                    # Check if it's just repeating the source language text
+                    if input_data.text.strip() == text.strip():
+                        return True
+                    
+                    # Check for too short translations (unless source was also short)
+                    if len(text) < 10 and len(input_data.text) > 20:
+                        return True
+                    
+                    # Check for hallucinations - if it still contains language codes
+                    if re.search(r'\b[a-z]{2}\s+[a-z]{2}\b', text):
+                        return True
+                    
+                    # Check for severe token repetition
+                    words = text.split()
+                    if len(words) >= 4:
+                        # Check for repeated sequences of words
+                        repeated_patterns = 0
+                        for j in range(len(words) - 3):
+                            pattern = " ".join(words[j:j+2])
+                            if pattern in " ".join(words[j+2:]):
+                                repeated_patterns += 1
+                        
+                        if repeated_patterns > 2:  # Multiple repeated patterns suggest hallucination
+                            return True
+                    
+                    return False
+                
+                # If translation is empty or poor quality, mark it for MBART fallback
+                if is_poor_quality_translation(translations[i]):
+                    # For now, just add a placeholder. We'll try MBART fallback later.
+                    if input_data.source_language == input_data.target_language:
+                        # Same language, just use the original text
+                        translations[i] = input_data.text
+                    else:
+                        # Different languages, use placeholder temporarily
+                        fallback_text = "[Translation not available]"
+                        translations[i] = fallback_text
+                        # Mark for MBART fallback attempt
+                
+                logger.debug(f"Processed MT5 translation {i}: '{translations[i]}'")
+            
+            # Check if we need to attempt MBART fallback for any translations
+            if any(translation == "[Translation not available]" for translation in translations) or \
+               any(is_poor_quality_translation(translation) for translation in translations):
+                logger.info("MT5 translation quality poor, attempting MBART fallback")
+                
+                try:
+                    # Get MBART translation as fallback
+                    mbart_translations = self._get_mbart_fallback_translation(
+                        input_data.text, 
+                        input_data.source_language, 
+                        input_data.target_language
+                    )
+                    
+                    if mbart_translations:
+                        # Replace poor quality MT5 translations with MBART results
+                        if isinstance(mbart_translations, list):
+                            for i, (mt5_trans, mbart_trans) in enumerate(zip(translations, mbart_translations)):
+                                if is_poor_quality_translation(mt5_trans):
+                                    translations[i] = mbart_trans
+                                    used_mbart_fallback = True
+                        else:
+                            # Single translation case
+                            if is_poor_quality_translation(translations[0] if isinstance(translations, list) else translations):
+                                translations = mbart_translations
+                                used_mbart_fallback = True
+                except Exception as e:
+                    logger.error(f"MBART fallback failed: {str(e)}", exc_info=True)
+                    # Keep the cleaned MT5 translation as is
         
         # If single input, return single output
         if isinstance(input_data.text, str):
             translations = translations[0] if translations else ""
         
+        # Enhance metadata for debugging
+        metadata = {
+            "source_language": input_data.source_language,
+            "target_language": input_data.target_language,
+            "model_type": getattr(self.model.config, "model_type", "unknown") if hasattr(self.model, "config") else "unknown"
+        }
+        
+        # Add model-specific metadata
+        if is_mt5:
+            metadata["is_mt5"] = True
+            metadata["mt5_postprocessing_applied"] = True
+            
+            if used_mbart_fallback:
+                metadata["used_mbart_fallback"] = True
+                metadata["original_mt5_translation"] = original_mt5_translations
+            
+            # Add information about the parameters used
+            parameters = input_data.parameters or {}
+            for k, v in parameters.items():
+                metadata[f"param_{k}"] = v
+        
         return ModelOutput(
             result=translations,
-            metadata={
-                "source_language": input_data.source_language,
-                "target_language": input_data.target_language,
-                "model_type": getattr(self.model.config, "model_type", "unknown") if hasattr(self.model, "config") else "unknown"
-            }
+            metadata=metadata
         )
+        
+    def _get_mbart_fallback_translation(self, text, source_language, target_language):
+        """
+        Get a translation from MBART as fallback when MT5 fails.
+        
+        Args:
+            text: The source text to translate
+            source_language: Source language code
+            target_language: Target language code
+            
+        Returns:
+            str or list: The translation from MBART, or None if failed
+        """
+        from app.services.models.manager import EnhancedModelManager
+        import asyncio
+        
+        # Log the fallback attempt
+        logger.info(f"Attempting MBART fallback translation from {source_language} to {target_language}")
+        
+        # Map source language and target language to MBART language codes
+        # MBART uses different language codes than our standard codes
+        mbart_lang_map = {
+            "en": "en_XX", "es": "es_XX", "fr": "fr_XX", "de": "de_DE", "it": "it_IT", 
+            "pt": "pt_XX", "nl": "nl_XX", "pl": "pl_PL", "ru": "ru_RU", "zh": "zh_CN", 
+            "ja": "ja_XX", "ko": "ko_KR", "ar": "ar_AR", "hi": "hi_IN", "tr": "tr_TR",
+            "vi": "vi_VN", "th": "th_TH", "id": "id_ID", "tl": "fil_PH", "ro": "ro_RO"
+        }
+        
+        mbart_source_lang = mbart_lang_map.get(source_language, f"{source_language}_XX")
+        mbart_target_lang = mbart_lang_map.get(target_language, f"{target_language}_XX")
+        
+        try:
+            # Try to use an existing MBART model if available in our application state
+            # This is a bit of a hack since we don't have direct access to the model manager from here
+            
+            # Create a ModelInput for MBART
+            mbart_input = ModelInput(
+                text=text,
+                source_language=source_language,
+                target_language=target_language,
+                parameters={
+                    "mbart_source_lang": mbart_source_lang,
+                    "mbart_target_lang": mbart_target_lang,
+                    "fallback": True
+                }
+            )
+            
+            # Check if we're in a model manager context where we can use another model
+            if hasattr(self, 'config') and hasattr(self.config, 'get') and self.config.get('model_manager'):
+                # Use the model manager to get an MBART model
+                model_manager = self.config.get('model_manager')
+                
+                # Run in an event loop if we're not already in one
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # We're already in an event loop, run synchronously
+                        mbart_model_info = model_manager.load_model("mbart_translation")
+                        # Create wrapper and process
+                        from app.services.models.wrapper import create_model_wrapper
+                        wrapper = create_model_wrapper(
+                            "translation",
+                            mbart_model_info["model"],
+                            mbart_model_info["tokenizer"],
+                            {"task": "translation", "device": self.device, "precision": "float16"}
+                        )
+                        result = wrapper.process(mbart_input)
+                        return result.result
+                    else:
+                        # Create a new event loop and run
+                        async def get_mbart_translation():
+                            mbart_model_info = await model_manager.load_model("mbart_translation")
+                            from app.services.models.wrapper import create_model_wrapper
+                            wrapper = create_model_wrapper(
+                                "translation",
+                                mbart_model_info["model"],
+                                mbart_model_info["tokenizer"],
+                                {"task": "translation", "device": self.device, "precision": "float16"}
+                            )
+                            return wrapper.process(mbart_input)
+                        
+                        result = asyncio.run(get_mbart_translation())
+                        return result.result
+                except Exception as e:
+                    logger.error(f"Error accessing MBART via model manager: {str(e)}", exc_info=True)
+            
+            # If we couldn't use the model manager, try a more direct approach
+            # This should only be used as a last resort - it's better to use the model manager
+            if isinstance(text, list):
+                # For batch translation
+                results = []
+                
+                # Import transformers directly if needed
+                import torch
+                from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+                
+                # Load MBART model and tokenizer
+                model_name = "facebook/mbart-large-50-many-to-many-mmt"
+                model = MBartForConditionalGeneration.from_pretrained(model_name)
+                tokenizer = MBart50TokenizerFast.from_pretrained(model_name)
+                
+                # Move model to device if available
+                if torch.cuda.is_available():
+                    model = model.to("cuda")
+                
+                # Process each text
+                for item_text in text:
+                    # Set source language
+                    tokenizer.src_lang = mbart_source_lang
+                    
+                    # Encode text
+                    encoded = tokenizer(item_text, return_tensors="pt")
+                    if torch.cuda.is_available():
+                        encoded = {k: v.to("cuda") for k, v in encoded.items()}
+                    
+                    # Generate translation
+                    generated_tokens = model.generate(
+                        **encoded, 
+                        forced_bos_token_id=tokenizer.lang_code_to_id[mbart_target_lang]
+                    )
+                    
+                    # Decode translation
+                    translation = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
+                    results.append(translation)
+                
+                return results
+            else:
+                # For single text translation
+                import torch
+                from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+                
+                # Load MBART model and tokenizer
+                model_name = "facebook/mbart-large-50-many-to-many-mmt"
+                model = MBartForConditionalGeneration.from_pretrained(model_name)
+                tokenizer = MBart50TokenizerFast.from_pretrained(model_name)
+                
+                # Move model to device if available
+                if torch.cuda.is_available():
+                    model = model.to("cuda")
+                
+                # Set source language
+                tokenizer.src_lang = mbart_source_lang
+                
+                # Encode text
+                encoded = tokenizer(text, return_tensors="pt")
+                if torch.cuda.is_available():
+                    encoded = {k: v.to("cuda") for k, v in encoded.items()}
+                
+                # Generate translation
+                generated_tokens = model.generate(
+                    **encoded, 
+                    forced_bos_token_id=tokenizer.lang_code_to_id[mbart_target_lang]
+                )
+                
+                # Decode translation
+                translation = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
+                return translation
+                
+        except Exception as e:
+            logger.error(f"MBART fallback translation failed: {str(e)}", exc_info=True)
+            return None
 
 
 class LanguageDetectionWrapper(BaseModelWrapper):
