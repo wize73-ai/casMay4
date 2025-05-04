@@ -24,8 +24,9 @@ import psutil
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple, Literal
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Import rich Table and Panel for UI summaries
 from rich.table import Table
@@ -42,10 +43,12 @@ from app.ui.banner import print_startup_banner
 from app.ui.console import setup_console_logging
 from app.ui.console import console
 
-# Import enhanced hardware detection and model management
-from app.services.hardware.detector import HardwareDetector
+# Import model management
 from app.services.models.loader import ModelLoader
 from app.services.models.manager import EnhancedModelManager
+
+# Import SimpleHardwareDetector if needed later
+# from app.services.hardware.simple_detector import SimpleHardwareDetector
 
 # Import core components
 from app.core.pipeline.processor import UnifiedProcessor
@@ -508,7 +511,7 @@ class EnhancedHardwareDetector:
         is_extreme_low_memory = available_mem_gb < 2.0
         
         # Log memory status for diagnostics
-        logger.info(f"Memory status: {available_mem_gb:.2f}GB available, " +
+        self.logger.info(f"Memory status: {available_mem_gb:.2f}GB available, " +
                    f"Low memory: {is_low_memory}, Very low: {is_very_low_memory}, Extreme: {is_extreme_low_memory}")
         
         # Apply quantization based on hardware type and memory constraints
@@ -584,33 +587,107 @@ async def lifespan(app: FastAPI):
         # Configure application-wide logging
         app_logger = configure_logging(config)
 
-        # Hardware detection phase
+        # Hardware detection phase - use simplified detector to avoid colorama issues
         console.rule("[bold green]🚀 PHASE 1: Detecting Hardware[/bold green]")
         app_logger.info("PHASE 1/5: Detecting hardware capabilities...")
-        # Use original hardware detector for compatibility
-        hardware_detector = HardwareDetector(config)
-        hardware_info = hardware_detector.detect_all()
-
-        # Add enhanced hardware detection
-        enhanced_detector = EnhancedHardwareDetector(config)
-        enhanced_info = await enhanced_detector.detect_all()
-        optimal_config = enhanced_detector.recommend_config()
-        # Override model_size globally if medium+ hardware is detected
-        # This ensures CasaLingua selects medium models automatically for capable Apple Silicon machines.
-        if (
-            enhanced_info.processor_type == ProcessorType.APPLE_SILICON
-            and enhanced_info.total_memory >= 32 * 1024 * 1024 * 1024
-        ):
+        
+        try:
+            # Import SimpleHardwareDetector for startup stability
+            from app.services.hardware.simple_detector import SimpleHardwareDetector
+            hardware_detector = SimpleHardwareDetector(config)
+            hardware_info = hardware_detector.detect_all()
+            optimal_config = hardware_detector.recommend_config()
+            
+            # Use actual hardware detection results instead of hardcoded values
+            # Create a simple object that mimics EnhancedHardwareInfo properties with detected attributes
+            
+            # Calculate accurate memory values from hardware_info
+            total_memory_bytes = int(hardware_info.get("memory", {}).get("total_gb", 8) * 1024 * 1024 * 1024)
+            available_memory_bytes = int(hardware_info.get("memory", {}).get("available_gb", 4) * 1024 * 1024 * 1024)
+            
+            # Determine processor type based on detected hardware
+            detected_processor_type = ProcessorType.OTHER
+            if hardware_info.get("system", {}).get("processor_type", "").startswith("apple_silicon"):
+                detected_processor_type = ProcessorType.APPLE_SILICON
+            elif "intel" in hardware_info.get("cpu", {}).get("brand", "").lower():
+                detected_processor_type = ProcessorType.INTEL
+            
+            # Get CPU core counts
+            cpu_cores = hardware_info.get("cpu", {}).get("count_physical", 4)
+            cpu_threads = hardware_info.get("cpu", {}).get("count_logical", 8)
+            
+            # Check for GPU
+            has_gpu = hardware_info.get("gpu", {}).get("has_gpu", False)
+            gpu_name = hardware_info.get("gpu", {}).get("gpu_name", None)
+            
+            # Get GPU memory if available
+            gpu_memory = None
+            if has_gpu and "gpu_memory_gb" in hardware_info.get("gpu", {}):
+                gpu_memory = int(hardware_info.get("gpu", {}).get("gpu_memory_gb", 0) * 1024 * 1024 * 1024)
+            
+            # Create GPU info list if available
+            gpu_list = []
+            if has_gpu and "devices" in hardware_info.get("gpu", {}):
+                for device in hardware_info.get("gpu", {}).get("devices", []):
+                    gpu_memory_gb = device.get("memory_gb", 0)
+                    gpu_list.append(GPUInfo(
+                        device_id=device.get("index", 0),
+                        name=device.get("name", "Unknown GPU"),
+                        memory_total=int(gpu_memory_gb * 1024 * 1024 * 1024),
+                        memory_available=int(gpu_memory_gb * 0.9 * 1024 * 1024 * 1024),  # Estimate 90% available
+                        vendor="apple" if device.get("apple_silicon", False) else "unknown"
+                    ))
+            
+            # Create enhanced hardware info object with actual detected values
+            enhanced_info = type('EnhancedHardwareInfo', (object,), {
+                'processor_type': detected_processor_type,
+                'total_memory': total_memory_bytes,
+                'available_memory': available_memory_bytes,
+                'cpu_cores': cpu_cores,
+                'cpu_threads': cpu_threads,
+                'has_gpu': has_gpu,
+                'gpu_name': gpu_name,
+                'gpu_memory': gpu_memory,
+                'gpus': gpu_list,
+                'system_name': platform.system(),
+                'gpu_count': len(gpu_list),
+                'get_best_gpu': lambda self: self.gpus[0] if self.gpus else None,
+                'get_gpu_by_id': lambda self, device_id: next((gpu for gpu in self.gpus if gpu.device_id == device_id), None),
+                'get_total_gpu_memory': lambda self: sum(gpu.memory_total for gpu in self.gpus),
+                'get_available_gpu_memory': lambda self: sum(gpu.memory_available for gpu in self.gpus)
+            })()
+        except Exception as e:
+            app_logger.error(f"Error during hardware detection: {e}")
+            hardware_info = {}
+            # Create minimal dummy hardware info
+            enhanced_info = type('EnhancedHardwareInfo', (object,), {
+                'processor_type': ProcessorType.OTHER,
+                'total_memory': 4 * 1024 * 1024 * 1024,  # 4GB
+                'available_memory': 2 * 1024 * 1024 * 1024,  # 2GB
+                'cpu_cores': 2,
+                'cpu_threads': 4,
+                'has_gpu': False,
+                'gpu_name': None,
+                'gpu_memory': None,
+                'gpus': [],
+                'system_name': platform.system()
+            })()
+            optimal_config = {"device": "cpu", "memory": {"model_size": "small", "batch_size": 4}}
+        # Skip model size overriding to avoid startup issues
+        # We'll just use the simple detector's recommendations
+        if optimal_config.get("memory", {}).get("model_size") == "large":
             config["model_size"] = "medium"
-            app_logger.info("🧠 Auto-upgraded model_size to 'medium' for Apple M-series Mac with >=32GB RAM")
-        model_config = enhanced_detector.apply_configuration(optimal_config)
+            app_logger.info("🧠 Auto-upgraded model_size to 'medium' based on hardware detection")
+        
+        # No enhanced detector in simplified startup
+        model_config = optimal_config
         app_logger.info("✓ Hardware detection complete")
 
         # Model loader initialization (no fallback to mock logic)
         console.rule("[bold cyan]🔧 PHASE 2: Loading Models[/bold cyan]")
         app_logger.info("PHASE 2/5: Initializing model loader...")
         from app.services.models.loader import ModelLoader
-        from app.services.models.registry import load_registry_config
+        from app.services.models.loader import load_registry_config
         registry_config = load_registry_config(config)
         # Patch registry_config for language_detection to use papluca/xlm-roberta-base-language-detection
         if "language_detection" in registry_config:
@@ -650,6 +727,7 @@ async def lifespan(app: FastAPI):
                 "tokenizer_name": "t5-small",
                 "task": "simplification",
                 "type": "transformers",
+                "model_class": "T5ForConditionalGeneration",
                 "framework": "transformers",
                 "module": "app.services.models.wrappers.simplification"
             }
@@ -693,6 +771,81 @@ async def lifespan(app: FastAPI):
         model_loader = ModelLoader(config=config)
         model_loader.model_config = registry_config
 
+        # Check if required models are available and download them if not
+        app_logger.info("Checking for required models and downloading if necessary...")
+        import asyncio
+        import sys
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from scripts.download_models import download_model, DEFAULT_MODELS, ADVANCED_MODELS
+        
+        # Identify the needed models
+        models_to_check = ["translation_model", "translation_small", "language_detection"]
+        models_dir = Path(config.get("models", {}).get("models_dir", "models"))
+        cache_dir = Path(config.get("models", {}).get("cache_dir", "cache/models"))
+        
+        # Create directories if they don't exist
+        os.makedirs(models_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Gather the model definitions from the download script
+        combined_models = {**DEFAULT_MODELS, **ADVANCED_MODELS}
+        
+        # Add the MBART models if they're not in the default definitions
+        if "translation_model" not in combined_models:
+            combined_models["translation_model"] = {
+                "name": "Multilingual Translation",
+                "model_name": "facebook/mbart-large-50-many-to-many-mmt",
+                "model_type": "seq2seq",
+                "tokenizer_name": "facebook/mbart-large-50-many-to-many-mmt",
+                "size_gb": 2.3,
+                "languages": ["en", "es", "fr", "de", "ru", "zh", "ja", "pt", "it", "ar", "hi", "vi"],
+                "tasks": ["translation"],
+                "description": "Multilingual translation model (MBART-50) for 50 languages",
+                "requires_gpu": False,
+                "memory_required": 4.0,
+                "gpu_memory_required": 3.0,
+                "model_format": "transformers"
+            }
+        
+        if "translation_small" not in combined_models:
+            combined_models["translation_small"] = {
+                "name": "Multilingual Translation (Small)",
+                "model_name": "facebook/mbart-large-50-one-to-many-mmt",
+                "model_type": "seq2seq",
+                "tokenizer_name": "facebook/mbart-large-50-one-to-many-mmt",
+                "size_gb": 1.2,
+                "languages": ["en", "es", "fr", "de", "ru", "zh", "ja", "pt", "it", "ar", "hi", "vi"],
+                "tasks": ["translation"],
+                "description": "Multilingual translation model (MBART-50) optimized for translating from English",
+                "requires_gpu": False,
+                "memory_required": 2.0,
+                "gpu_memory_required": 1.5,
+                "model_format": "transformers"
+            }
+        
+        # Check and download each required model
+        for model_id in models_to_check:
+            model_dir = models_dir / model_id
+            if not (model_dir / "config.json").exists():
+                if model_id in combined_models:
+                    app_logger.info(f"Model {model_id} not found, downloading...")
+                    success = await download_model(
+                        model_id=model_id,
+                        model_info=combined_models[model_id],
+                        output_dir=models_dir,
+                        cache_dir=cache_dir,
+                        force=False,
+                        use_mlx=False
+                    )
+                    if success:
+                        app_logger.info(f"✓ Successfully downloaded model {model_id}")
+                    else:
+                        app_logger.error(f"❌ Failed to download model {model_id}")
+                else:
+                    app_logger.warning(f"Model {model_id} not found in model definitions, will use fallback")
+            else:
+                app_logger.info(f"Model {model_id} already exists, skipping download")
+                
         # Use enhanced model manager with real model loader
         app_logger.info("Initializing enhanced model manager...")
         model_manager = EnhancedModelManager(model_loader, hardware_info, config)
@@ -752,10 +905,15 @@ async def lifespan(app: FastAPI):
         # Store components in application state
         app.state.config = config
         app.state.hardware_detector = hardware_detector
-        app.state.enhanced_detector = enhanced_detector
+        # No enhanced detector in simplified startup
+        app.state.enhanced_detector = None
         app.state.hardware_info = hardware_info
         app.state.enhanced_info = enhanced_info
-        # app.state.model_registry = None  # ModelRegistry is not used in this flow
+        
+        # Create and assign ModelRegistry to app.state
+        from app.services.models.loader import ModelRegistry
+        app.state.model_registry = model_loader.registry
+        
         app.state.model_manager = model_manager
         app.state.processor = processor
         app.state.audit_logger = audit_logger
@@ -766,9 +924,119 @@ async def lifespan(app: FastAPI):
         table = Table(title="🔍 Hardware Summary", style="bold blue")
         table.add_column("Component", style="cyan", no_wrap=True)
         table.add_column("Details", style="white")
-        table.add_row("CPU", f"{enhanced_info.cpu_cores} cores / {enhanced_info.cpu_threads} threads")
-        table.add_row("Memory", f"{enhanced_info.total_memory / (1024**3):.1f} GB total / {enhanced_info.available_memory / (1024**3):.1f} GB available")
-        table.add_row("GPU", enhanced_info.gpu_name or 'None')
+        
+        # Get more detailed CPU information if available
+        cpu_info = ""
+        if "cpu" in hardware_info and "brand" in hardware_info["cpu"]:
+            cpu_brand = hardware_info["cpu"]["brand"]
+            cpu_info = f"{cpu_brand} - "
+        cpu_info += f"{enhanced_info.cpu_cores} cores / {enhanced_info.cpu_threads} threads"
+        
+        # Add additional Apple Silicon details if available
+        if hardware_info.get("is_apple_silicon", False) or (
+            "system" in hardware_info and 
+            "processor_type" in hardware_info["system"] and 
+            hardware_info["system"]["processor_type"].startswith("apple_silicon")
+        ):
+            # Check if apple_silicon_model is in the main hardware_info
+            m_series = ""
+            if "apple_silicon_model" in hardware_info:
+                m_series = hardware_info["apple_silicon_model"]
+            # If not, try to derive it from cpu info or system info
+            elif "cpu" in hardware_info and "chip_type" in hardware_info["cpu"]:
+                chip_type = hardware_info["cpu"]["chip_type"]
+                if chip_type == "M4_Pro_Max":
+                    m_series = "M4 Pro/Max"
+                elif chip_type and chip_type.startswith("M"):
+                    m_series = chip_type.replace("_", " ")
+            elif "system" in hardware_info and "apple_silicon" in hardware_info["system"]:
+                m_series = hardware_info["system"]["apple_silicon"]
+                
+            if m_series:
+                cpu_info = f"Apple {m_series} - {enhanced_info.cpu_cores} cores / {enhanced_info.cpu_threads} threads"
+        
+        # Get memory details with proper formatting
+        mem_total = enhanced_info.total_memory / (1024**3)
+        mem_avail = enhanced_info.available_memory / (1024**3)
+        memory_info = f"{mem_total:.1f} GB total / {mem_avail:.1f} GB available"
+        
+        # Get proper GPU information
+        gpu_info = "None"
+        if enhanced_info.has_gpu:
+            if enhanced_info.gpu_name:
+                gpu_info = enhanced_info.gpu_name
+            elif enhanced_info.gpus and len(enhanced_info.gpus) > 0:
+                gpu_info = enhanced_info.gpus[0].name
+                
+            # Add GPU memory information if available
+            if enhanced_info.gpu_memory:
+                gpu_memory_gb = enhanced_info.gpu_memory / (1024**3)
+                gpu_info += f" ({gpu_memory_gb:.1f} GB)"
+            elif enhanced_info.gpus and enhanced_info.gpus[0].memory_total:
+                gpu_memory_gb = enhanced_info.gpus[0].memory_total / (1024**3)
+                gpu_info += f" ({gpu_memory_gb:.1f} GB)"
+        
+        # Add table rows
+        table.add_row("CPU", cpu_info)
+        table.add_row("Memory", memory_info)
+        table.add_row("GPU", gpu_info)
+        
+        # Add extra row for Apple Silicon if applicable
+        is_apple_silicon = hardware_info.get("is_apple_silicon", False) or (
+            "system" in hardware_info and 
+            "processor_type" in hardware_info["system"] and 
+            hardware_info["system"]["processor_type"].startswith("apple_silicon")
+        )
+        
+        if is_apple_silicon:
+            # Try to get the model information from different sources
+            model_info = ""
+            memory_info = ""
+            
+            # Check main hardware_info
+            if "apple_silicon_model" in hardware_info:
+                model_info = hardware_info["apple_silicon_model"]
+            elif "apple_silicon_memory" in hardware_info:
+                memory_info = hardware_info["apple_silicon_memory"]
+                
+            # Check cpu info
+            if not model_info and "cpu" in hardware_info:
+                cpu = hardware_info["cpu"]
+                if "chip_type" in cpu:
+                    chip_type = cpu["chip_type"]
+                    if chip_type == "M4_Pro_Max":
+                        model_info = "M4 Pro/Max"
+                    elif chip_type and chip_type.startswith("M"):
+                        model_info = chip_type.replace("_", " ")
+                elif "apple_silicon" in cpu and cpu["apple_silicon"]:
+                    if "chip_variant" in cpu:
+                        model_info = cpu["chip_variant"]
+                    elif "brand" in cpu and "Apple" in cpu["brand"]:
+                        model_info = cpu["brand"].replace("Apple ", "")
+            
+            # Check system info
+            if not model_info and "system" in hardware_info and "apple_silicon" in hardware_info["system"]:
+                model_info = hardware_info["system"]["apple_silicon"]
+            
+            # Check memory info
+            if not memory_info and "memory" in hardware_info:
+                memory = hardware_info["memory"]
+                if "apple_silicon_memory" in memory:
+                    memory_info = memory["apple_silicon_memory"]
+                elif "memory_configuration" in memory and memory["memory_configuration"] == "m4_pro_max_48gb":
+                    memory_info = "48GB"
+                elif "total_gb" in memory:
+                    memory_info = f"{int(memory['total_gb'])}GB"
+            
+            # Format the row text
+            if model_info and memory_info:
+                apple_silicon_text = f"{model_info.replace('_', ' ')} with {memory_info}"
+                table.add_row("Apple Silicon", apple_silicon_text)
+            elif model_info:
+                table.add_row("Apple Silicon", model_info.replace('_', ' '))
+            elif is_apple_silicon:
+                table.add_row("Apple Silicon", "Detected")
+            
         console.print(table)
         # Final celebratory banner
         console.print(
