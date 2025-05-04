@@ -63,14 +63,14 @@ class DetailedHealthResponse(BaseModel):
     "/health",
     response_model=HealthResponse,
     summary="Basic health check",
-    description="Performs a basic health check of the service."
+    description="Performs a basic health check of the service with real component status."
 )
 async def health_check(request: Request):
     """
-    Basic health check endpoint.
+    Basic health check endpoint with real component verification.
     
-    This endpoint provides a simple health status, mainly for
-    load balancers and monitoring systems.
+    This endpoint provides a simple health status based on actual component checks,
+    primarily for load balancers and monitoring systems.
     """
     start_time = time.time()
     
@@ -80,16 +80,91 @@ async def health_check(request: Request):
         start_time_ts = request.app.state.start_time
         uptime = time.time() - start_time_ts
         
-        # Check basic component status
-        services = {
-            "database": "ok",
-            "models": "ok",
-            "pipeline": "ok"
-        }
+        # Initialize service status dictionary
+        services = {}
+        critical_failures = 0
+        
+        # Check database status (fast check)
+        try:
+            if (hasattr(request.app.state, "processor") and 
+                request.app.state.processor and 
+                hasattr(request.app.state.processor, "persistence_manager")):
+                
+                # Just verify that persistence manager exists and is accessible
+                persistence_manager = request.app.state.processor.persistence_manager
+                
+                # Perform a lightweight database test (faster than a full health check)
+                try:
+                    test_query = "SELECT 1"
+                    # Try with any DB - user manager should always be available
+                    persistence_manager.user_manager.execute_query(test_query)
+                    services["database"] = "healthy"
+                except Exception as e:
+                    logger.error(f"Database check error: {str(e)}", exc_info=True)
+                    services["database"] = "error"
+                    critical_failures += 1
+            else:
+                services["database"] = "not_initialized"
+                critical_failures += 1
+        except Exception as e:
+            logger.error(f"Error accessing database components: {str(e)}", exc_info=True)
+            services["database"] = "error"
+            critical_failures += 1
+        
+        # Check model status (fast check)
+        try:
+            if hasattr(request.app.state, "model_manager") and request.app.state.model_manager:
+                model_manager = request.app.state.model_manager
+                model_info = await model_manager.get_model_info()
+                loaded_models = model_info.get("loaded_models", [])
+                
+                # Check if critical models are loaded
+                critical_models = ["translation", "language_detection"]
+                critical_models_loaded = any(
+                    any(critical in model.lower() for critical in critical_models)
+                    for model in loaded_models
+                )
+                
+                if critical_models_loaded:
+                    services["models"] = "healthy"
+                elif loaded_models:
+                    # Some models loaded, but not the critical ones
+                    services["models"] = "degraded"
+                else:
+                    # No models loaded
+                    services["models"] = "error"
+                    critical_failures += 1
+            else:
+                services["models"] = "not_initialized"
+                critical_failures += 1
+        except Exception as e:
+            logger.error(f"Error accessing model manager: {str(e)}", exc_info=True)
+            services["models"] = "error"
+            critical_failures += 1
+        
+        # Check pipeline processor status
+        try:
+            if hasattr(request.app.state, "processor") and request.app.state.processor:
+                # Just verify that processor exists and is initialized
+                services["pipeline"] = "healthy"
+            else:
+                services["pipeline"] = "not_initialized"
+                critical_failures += 1
+        except Exception as e:
+            logger.error(f"Error accessing processor: {str(e)}", exc_info=True)
+            services["pipeline"] = "error"
+            critical_failures += 1
+        
+        # Determine overall status
+        overall_status = "healthy"
+        if critical_failures > 0:
+            overall_status = "error"
+        elif "degraded" in services.values():
+            overall_status = "degraded"
         
         # Prepare response
         response = HealthResponse(
-            status="healthy",
+            status=overall_status,
             version=config.get("version", "1.0.0"),
             environment=config.get("environment", "development"),
             uptime=uptime,
@@ -104,9 +179,9 @@ async def health_check(request: Request):
         
         # Return degraded status
         return HealthResponse(
-            status="degraded",
-            version=request.app.state.config.get("version", "1.0.0"),
-            environment=request.app.state.config.get("environment", "development"),
+            status="error",
+            version=request.app.state.config.get("version", "1.0.0") if hasattr(request.app.state, "config") else "1.0.0",
+            environment=request.app.state.config.get("environment", "development") if hasattr(request.app.state, "config") else "development",
             uptime=0.0,
             timestamp=datetime.now(),
             services={"error": str(e)}
@@ -187,17 +262,18 @@ async def detailed_health_check(request: Request):
 @router.get(
     "/health/models",
     summary="Model health check",
-    description="Performs a health check of the language models."
+    description="Performs a comprehensive health check of the language models with functionality verification."
 )
 async def model_health_check(request: Request) -> dict:
     """
-    Model health check endpoint.
+    Enhanced model health check endpoint.
 
-    This endpoint provides status information specifically about
-    the language models used in the system.
+    This endpoint provides detailed status information about the language 
+    models used in the system, including functionality verification tests.
     """
     start_time = time.time()
     try:
+        # Get model manager from application state
         model_manager = getattr(request.app.state, "model_manager", None)
         if model_manager is None:
             logger.error("Model manager not initialized")
@@ -208,24 +284,152 @@ async def model_health_check(request: Request) -> dict:
                 "device": None,
                 "response_time": time.time() - start_time,
             }
+        
+        # Get model information
         model_info = await model_manager.get_model_info()
         loaded_models = model_info.get("loaded_models", [])
+        
+        # Get model registry if available
         model_registry = getattr(request.app.state, "model_registry", None)
-        status_str = "healthy" if loaded_models else "degraded"
+        
+        # Test results for each model
+        model_test_results = {}
+        critical_errors = 0
+        
+        # Check if we have any loaded models
+        if not loaded_models:
+            return {
+                "status": "error",
+                "message": "No models loaded",
+                "loaded_models": [],
+                "device": model_info.get("device", "cpu"),
+                "response_time": time.time() - start_time,
+            }
+        
+        # Get processor for running model tests
+        processor = getattr(request.app.state, "processor", None)
+        if processor is None:
+            logger.warning("Processor not available for model verification tests")
+            
+            # Still return loaded model info, but mark status as degraded
+            return {
+                "status": "degraded",
+                "message": f"{len(loaded_models)} models loaded, but functionality verification not available",
+                "loaded_models": loaded_models,
+                "device": model_info.get("device", "cpu"),
+                "verification_available": False,
+                "response_time": time.time() - start_time,
+            }
+        
+        # Check all available models (use processor to verify functionality)
+        for model_name in loaded_models:
+            model_test_start = time.time()
+            model_result = {
+                "name": model_name,
+                "loaded": True,
+            }
+            
+            try:
+                # Perform model-specific tests
+                if "translation" in model_name.lower():
+                    # Test translation with a simple sentence
+                    test_text = "Hello, how are you?"
+                    test_result = await processor.translate_text(
+                        text=test_text,
+                        source_lang="en",
+                        target_lang="es",
+                        model_name=model_name if "model_name" in model_name else None
+                    )
+                    model_result["test_result"] = "success" if test_result and len(test_result) > 0 else "failure"
+                    model_result["response_time"] = time.time() - model_test_start
+                
+                elif "language_detection" in model_name.lower():
+                    # Test language detection with a simple sentence
+                    test_text = "Hello, how are you?"
+                    test_result = await processor.detect_language(text=test_text)
+                    model_result["test_result"] = "success" if test_result and test_result.get("language") == "en" else "failure"
+                    model_result["response_time"] = time.time() - model_test_start
+                
+                elif "simplifier" in model_name.lower():
+                    # Test simplification with a complex sentence
+                    test_text = "The intricate mechanisms of quantum physics elude comprehension by many individuals."
+                    test_result = await processor.simplify_text(text=test_text, target_level="simple")
+                    model_result["test_result"] = "success" if test_result and len(test_result) > 0 else "failure"
+                    model_result["response_time"] = time.time() - model_test_start
+                
+                else:
+                    # For other models, just mark as loaded without functionality test
+                    model_result["test_result"] = "skipped"
+                    model_result["message"] = "Functionality test not implemented for this model type"
+                    model_result["response_time"] = time.time() - model_test_start
+                
+                # Check for critical models that require functionality tests
+                if model_result.get("test_result") == "failure" and any(
+                    critical_type in model_name.lower() 
+                    for critical_type in ["translation", "language_detection"]
+                ):
+                    critical_errors += 1
+                    model_result["status"] = "error"
+                    model_result["critical"] = True
+                elif model_result.get("test_result") == "success":
+                    model_result["status"] = "healthy"
+                elif model_result.get("test_result") == "skipped":
+                    model_result["status"] = "unknown"
+                else:
+                    model_result["status"] = "degraded"
+                
+            except Exception as e:
+                logger.error(f"Error testing model {model_name}: {str(e)}", exc_info=True)
+                model_result["test_result"] = "failure"
+                model_result["error"] = str(e)
+                model_result["status"] = "error"
+                model_result["response_time"] = time.time() - model_test_start
+                
+                # Check if this is a critical model
+                if any(critical_type in model_name.lower() 
+                       for critical_type in ["translation", "language_detection"]):
+                    critical_errors += 1
+                    model_result["critical"] = True
+            
+            # Add to results
+            model_test_results[model_name] = model_result
+        
+        # Determine overall status
+        if critical_errors > 0:
+            overall_status = "error"
+            status_message = f"{critical_errors} critical models failed functionality tests"
+        elif len(model_test_results) < len(loaded_models):
+            overall_status = "degraded"
+            status_message = f"{len(model_test_results)}/{len(loaded_models)} models verified"
+        else:
+            # Count models with issues
+            models_with_issues = sum(1 for result in model_test_results.values() 
+                                    if result.get("status") in ["error", "degraded"])
+            if models_with_issues > 0:
+                overall_status = "degraded"
+                status_message = f"{models_with_issues} models have functionality issues"
+            else:
+                overall_status = "healthy"
+                status_message = f"All {len(loaded_models)} models verified and healthy"
+        
+        # Prepare final result
         result = {
-            "status": status_str,
-            "message": f"{len(loaded_models)} models loaded" if loaded_models else "No models loaded",
+            "status": overall_status,
+            "message": status_message,
             "loaded_models": loaded_models,
             "device": model_info.get("device", "cpu"),
+            "model_details": model_test_results,
+            "verification_available": True,
             "response_time": time.time() - start_time,
         }
+        
+        # Add registry information if available
         if model_registry is not None:
             registry_summary = model_registry.get_registry_summary()
             result["registry"] = registry_summary
         else:
-            if loaded_models:
-                result["status"] = "degraded"
-                result["message"] += "; model registry not initialized"
+            result["registry_available"] = False
+        
         return result
     except Exception as e:
         logger.error(f"Model health check error: {str(e)}", exc_info=True)
@@ -251,24 +455,95 @@ async def database_health_check(request: Request):
     start_time = time.time()
     
     try:
-        # Check if database connection exists in app state
-        # This is a placeholder - implement based on your actual DB setup
-        db_status = "ok"
-        db_response_time = 0.0
+        # Access the persistence manager from app state
+        if not hasattr(request.app.state, "processor") or not hasattr(request.app.state.processor, "persistence_manager"):
+            return {
+                "status": "error",
+                "message": "Persistence manager not initialized",
+                "response_time": time.time() - start_time
+            }
         
+        persistence_manager = request.app.state.processor.persistence_manager
+        
+        # Test connection and collect results for all database components
+        db_results = {}
+        db_errors = []
+        
+        # Check user database
         try:
-            # Simulate a DB ping/test query
-            # Replace with actual DB check
-            time.sleep(0.01)  # Simulate DB query time
-            db_response_time = 0.01
+            user_db_query_start = time.time()
+            # Run a simple query to check if the database is responsive
+            test_query = "SELECT 1"
+            persistence_manager.user_manager.execute_query(test_query)
+            user_db_response_time = time.time() - user_db_query_start
+            db_results["users_db"] = {
+                "status": "healthy",
+                "response_time": user_db_response_time
+            }
         except Exception as e:
-            db_status = "error"
-            db_response_time = 0.0
-            
+            logger.error(f"User database health check error: {str(e)}", exc_info=True)
+            db_results["users_db"] = {
+                "status": "error",
+                "message": str(e)
+            }
+            db_errors.append(f"User DB: {str(e)}")
+        
+        # Check content database
+        try:
+            content_db_query_start = time.time()
+            test_query = "SELECT 1"
+            persistence_manager.content_manager.execute_query(test_query)
+            content_db_response_time = time.time() - content_db_query_start
+            db_results["content_db"] = {
+                "status": "healthy",
+                "response_time": content_db_response_time
+            }
+        except Exception as e:
+            logger.error(f"Content database health check error: {str(e)}", exc_info=True)
+            db_results["content_db"] = {
+                "status": "error",
+                "message": str(e)
+            }
+            db_errors.append(f"Content DB: {str(e)}")
+        
+        # Check progress database
+        try:
+            progress_db_query_start = time.time()
+            test_query = "SELECT 1"
+            persistence_manager.progress_manager.execute_query(test_query)
+            progress_db_response_time = time.time() - progress_db_query_start
+            db_results["progress_db"] = {
+                "status": "healthy",
+                "response_time": progress_db_response_time
+            }
+        except Exception as e:
+            logger.error(f"Progress database health check error: {str(e)}", exc_info=True)
+            db_results["progress_db"] = {
+                "status": "error",
+                "message": str(e)
+            }
+            db_errors.append(f"Progress DB: {str(e)}")
+        
+        # Calculate average response time for healthy databases
+        healthy_dbs = [db for db, result in db_results.items() if result["status"] == "healthy"]
+        avg_response_time = 0.0
+        if healthy_dbs:
+            avg_response_time = sum(db_results[db]["response_time"] for db in healthy_dbs) / len(healthy_dbs)
+        
+        # Determine overall database status
+        if not db_errors:
+            overall_status = "healthy"
+        elif len(db_errors) < len(db_results):
+            overall_status = "degraded"
+        else:
+            overall_status = "error"
+        
         return {
-            "status": db_status,
-            "response_time": db_response_time,
-            "total_time": time.time() - start_time
+            "status": overall_status,
+            "components": db_results,
+            "response_time": avg_response_time,
+            "total_time": time.time() - start_time,
+            "errors": db_errors if db_errors else None
         }
         
     except Exception as e:
@@ -284,173 +559,611 @@ async def database_health_check(request: Request):
     "/readiness",
     status_code=status.HTTP_200_OK,
     summary="Readiness probe",
-    description="Kubernetes readiness probe endpoint."
+    description="Enhanced Kubernetes readiness probe endpoint that verifies all required components."
 )
 async def readiness_probe(request: Request, response: Response):
     """
-    Readiness probe endpoint for Kubernetes.
+    Enhanced readiness probe endpoint for Kubernetes.
     
-    This endpoint indicates whether the service is ready to handle requests.
+    This endpoint performs a comprehensive check to determine if the service 
+    is ready to handle requests, verifying all required components.
     """
+    start_time = time.time()
+    readiness_checks = {}
+    
     try:
-        # Check if essential services are initialized
+        # 1. Check if processor is initialized
         if not hasattr(request.app.state, "processor") or not request.app.state.processor:
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return {"status": "not_ready", "message": "Processor not initialized"}
+            readiness_checks["processor"] = {
+                "status": "failed",
+                "message": "Processor not initialized"
+            }
+        else:
+            readiness_checks["processor"] = {
+                "status": "passed",
+                "message": "Processor initialized"
+            }
             
+        # 2. Check if model manager is initialized
         if not hasattr(request.app.state, "model_manager") or not request.app.state.model_manager:
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return {"status": "not_ready", "message": "Model manager not initialized"}
+            readiness_checks["model_manager"] = {
+                "status": "failed",
+                "message": "Model manager not initialized"
+            }
+        else:
+            # 3. Check if critical models are loaded
+            model_manager = request.app.state.model_manager
+            model_info = await model_manager.get_model_info()
+            loaded_models = model_info.get("loaded_models", [])
             
-        # Check if any models are loaded
-        model_manager = request.app.state.model_manager
-        model_info = await model_manager.get_model_info()
-        
-        # Service is considered ready if at least the essential models are loaded
-        # Adjust this condition based on your application's requirements
-        if not model_info.get("loaded_models"):
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return {"status": "not_ready", "message": "No models loaded"}
+            # Define critical models that must be loaded for the service to be ready
+            critical_models = {
+                "language_detection": False,
+                "translation": False
+            }
             
-        return {"status": "ready"}
+            # Check if critical models are loaded
+            for model in loaded_models:
+                for critical_model in critical_models:
+                    if critical_model in model.lower():
+                        critical_models[critical_model] = True
+            
+            if all(critical_models.values()):
+                readiness_checks["models"] = {
+                    "status": "passed",
+                    "message": "All critical models loaded",
+                    "details": {
+                        "loaded_models": loaded_models,
+                        "critical_models": critical_models
+                    }
+                }
+            else:
+                missing_models = [model for model, loaded in critical_models.items() if not loaded]
+                readiness_checks["models"] = {
+                    "status": "failed",
+                    "message": f"Missing critical models: {', '.join(missing_models)}",
+                    "details": {
+                        "loaded_models": loaded_models,
+                        "critical_models": critical_models
+                    }
+                }
         
+        # 4. Check database connectivity
+        if (hasattr(request.app.state, "processor") and 
+            request.app.state.processor and 
+            hasattr(request.app.state.processor, "persistence_manager")):
+            
+            persistence_manager = request.app.state.processor.persistence_manager
+            
+            try:
+                # Test database connectivity with a simple query
+                test_query = "SELECT 1"
+                persistence_manager.user_manager.execute_query(test_query)
+                readiness_checks["database"] = {
+                    "status": "passed",
+                    "message": "Database connectivity verified"
+                }
+            except Exception as e:
+                logger.error(f"Database connectivity check failed: {str(e)}", exc_info=True)
+                readiness_checks["database"] = {
+                    "status": "failed",
+                    "message": f"Database connectivity check failed: {str(e)}"
+                }
+        else:
+            readiness_checks["database"] = {
+                "status": "failed",
+                "message": "Persistence manager not initialized"
+            }
+        
+        # 5. Check system metrics (optional)
+        if hasattr(request.app.state, "metrics") and request.app.state.metrics:
+            readiness_checks["metrics"] = {
+                "status": "passed",
+                "message": "Metrics collector initialized"
+            }
+        else:
+            # Metrics are optional, so mark as warning instead of failure
+            readiness_checks["metrics"] = {
+                "status": "warning",
+                "message": "Metrics collector not initialized"
+            }
+            
+        # Determine overall readiness status
+        # Service is ready only if all critical checks pass
+        critical_checks = ["processor", "model_manager", "models", "database"]
+        failed_critical_checks = [check for check in critical_checks 
+                                if check in readiness_checks and 
+                                readiness_checks[check]["status"] == "failed"]
+        
+        if failed_critical_checks:
+            # Service is not ready
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {
+                "status": "not_ready",
+                "message": f"Failed critical checks: {', '.join(failed_critical_checks)}",
+                "checks": readiness_checks,
+                "response_time": time.time() - start_time
+            }
+        else:
+            # Service is ready
+            return {
+                "status": "ready",
+                "message": "All critical components are ready",
+                "checks": readiness_checks,
+                "response_time": time.time() - start_time
+            }
+            
     except Exception as e:
         logger.error(f"Readiness probe error: {str(e)}", exc_info=True)
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        return {"status": "error", "message": str(e)}
+        return {
+            "status": "error", 
+            "message": f"Error during readiness check: {str(e)}",
+            "response_time": time.time() - start_time
+        }
 
 @router.get(
     "/liveness",
     status_code=status.HTTP_200_OK,
     summary="Liveness probe",
-    description="Kubernetes liveness probe endpoint."
+    description="Enhanced Kubernetes liveness probe endpoint that performs basic health checks."
 )
-async def liveness_probe():
+async def liveness_probe(request: Request, response: Response):
     """
-    Liveness probe endpoint for Kubernetes.
+    Enhanced liveness probe endpoint for Kubernetes.
     
-    This endpoint indicates whether the service is alive and running.
+    This endpoint performs basic health checks to determine if the service
+    is alive and functioning. Unlike readiness, this primarily checks if
+    the application is running and responsive, not if it's ready to accept 
+    work.
     """
-    # Simple liveness probe - if this endpoint responds, the service is alive
-    return {"status": "alive"}
+    start_time = time.time()
+    
+    try:
+        # For liveness, we check fewer things than readiness
+        # The primary goal is to determine if the application has crashed or deadlocked
+        
+        # Check if application state is accessible (basic check)
+        if not hasattr(request.app, "state"):
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            return {
+                "status": "error",
+                "message": "Application state is not accessible",
+                "response_time": time.time() - start_time
+            }
+            
+        # Check system memory usage to detect memory leaks or resource exhaustion
+        try:
+            memory = psutil.virtual_memory()
+            process = psutil.Process(os.getpid())
+            process_memory = process.memory_info().rss / (1024 * 1024)  # MB
+            
+            # Alert if memory usage is critically high (>95%)
+            if memory.percent > 95:
+                logger.warning(f"System memory usage critically high: {memory.percent}%")
+                return {
+                    "status": "warning",
+                    "message": f"System memory usage critically high: {memory.percent}%",
+                    "memory_usage": {
+                        "system_percent": memory.percent,
+                        "process_memory_mb": process_memory
+                    },
+                    "response_time": time.time() - start_time
+                }
+        except Exception as e:
+            logger.error(f"Error checking system resources: {str(e)}", exc_info=True)
+            # Continue with liveness check even if resource check fails
+            
+        # Check if essential app components exist, but don't verify their functionality
+        # That's what readiness is for
+        components = {
+            "config": hasattr(request.app.state, "config"),
+            "processor": hasattr(request.app.state, "processor"),
+            "model_manager": hasattr(request.app.state, "model_manager")
+        }
+        
+        # For liveness, we only fail if ALL critical components are missing
+        # This indicates a severely broken application state
+        if not any(components.values()):
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            return {
+                "status": "error",
+                "message": "No essential components are initialized",
+                "components": components,
+                "response_time": time.time() - start_time
+            }
+            
+        # App is alive, even if some components are missing
+        # Missing components should be caught by readiness, not liveness
+        return {
+            "status": "alive",
+            "uptime": time.time() - request.app.state.start_time if hasattr(request.app.state, "start_time") else None,
+            "components": components,
+            "response_time": time.time() - start_time
+        }
+        
+    except Exception as e:
+        logger.error(f"Liveness probe error: {str(e)}", exc_info=True)
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {
+            "status": "error", 
+            "message": f"Error during liveness check: {str(e)}",
+            "response_time": time.time() - start_time
+        }
 
 # ----- Helper Functions -----
 
 async def check_component_status(request: Request) -> List[ComponentStatus]:
     """
-    Check the status of all system components.
+    Check the status of all system components with comprehensive verification.
     
     Args:
         request: Request object containing application state
         
     Returns:
-        List of component status objects
+        List of component status objects with detailed health information
     """
     components = []
+    check_time = datetime.now()
     
-    # Check processor
+    # 1. Check processor - also verify its functionality
     if hasattr(request.app.state, "processor") and request.app.state.processor:
         processor = request.app.state.processor
+        processor_version = processor.version if hasattr(processor, "version") else None
+        
+        # Check if processor has all required pipelines
+        pipelines_count = len(processor.pipelines) if hasattr(processor, "pipelines") else 0
+        required_pipelines = ["translation", "language_detection", "simplification"]
+        missing_pipelines = []
+        available_pipelines = []
+        
+        if hasattr(processor, "pipelines"):
+            for pipeline_name in required_pipelines:
+                if not any(pipeline_name.lower() in p.lower() for p in processor.pipelines):
+                    missing_pipelines.append(pipeline_name)
+                else:
+                    available_pipelines.append(pipeline_name)
+        
+        # Determine processor status
+        if missing_pipelines:
+            processor_status = "degraded"
+            processor_details = {
+                "pipeline_count": pipelines_count,
+                "missing_pipelines": missing_pipelines,
+                "available_pipelines": available_pipelines,
+                "warning": "Some required pipelines are missing"
+            }
+        else:
+            processor_status = "healthy"
+            processor_details = {
+                "pipeline_count": pipelines_count,
+                "available_pipelines": available_pipelines,
+            }
+        
         components.append(ComponentStatus(
             name="processor",
-            status="ok",
-            version=processor.version if hasattr(processor, "version") else None,
-            details={"pipeline_count": len(processor.pipelines) if hasattr(processor, "pipelines") else 0},
-            last_check=datetime.now()
+            status=processor_status,
+            version=processor_version,
+            details=processor_details,
+            last_check=check_time
         ))
     else:
         components.append(ComponentStatus(
             name="processor",
             status="error",
             details={"error": "Not initialized"},
-            last_check=datetime.now()
+            last_check=check_time
         ))
-        
-    # Check model manager
+    
+    # 2. Check model manager with model availability verification
     if hasattr(request.app.state, "model_manager") and request.app.state.model_manager:
         model_manager = request.app.state.model_manager
         model_info = await model_manager.get_model_info()
-        model_status = "ok" if model_info.get("loaded_models") else "degraded"
+        loaded_models = model_info.get("loaded_models", [])
+        
+        # Check for critical models that must be loaded
+        critical_models = ["translation", "language_detection"]
+        critical_models_status = {}
+        for critical_model in critical_models:
+            critical_models_status[critical_model] = any(
+                critical_model.lower() in model.lower() for model in loaded_models
+            )
+        
+        # Determine model manager status
+        if not loaded_models:
+            model_status = "error"
+            model_details = {
+                "loaded_models": 0,
+                "critical_models": critical_models_status,
+                "device": model_info.get("device", "cpu"),
+                "error": "No models loaded"
+            }
+        elif not all(critical_models_status.values()):
+            model_status = "degraded"
+            missing_critical = [m for m, loaded in critical_models_status.items() if not loaded]
+            model_details = {
+                "loaded_models": len(loaded_models),
+                "models_list": loaded_models,
+                "missing_critical": missing_critical,
+                "device": model_info.get("device", "cpu"),
+                "low_memory_mode": model_info.get("low_memory_mode", False),
+                "warning": "Some critical models are not loaded"
+            }
+        else:
+            model_status = "healthy"
+            model_details = {
+                "loaded_models": len(loaded_models),
+                "models_list": loaded_models,
+                "device": model_info.get("device", "cpu"),
+                "low_memory_mode": model_info.get("low_memory_mode", False)
+            }
         
         components.append(ComponentStatus(
             name="model_manager",
             status=model_status,
-            details={
-                "loaded_models": len(model_info.get("loaded_models", [])),
-                "device": model_info.get("device", "cpu"),
-                "low_memory_mode": model_info.get("low_memory_mode", False)
-            },
-            last_check=datetime.now()
+            details=model_details,
+            last_check=check_time
         ))
     else:
         components.append(ComponentStatus(
             name="model_manager",
             status="error",
             details={"error": "Not initialized"},
-            last_check=datetime.now()
+            last_check=check_time
         ))
-        
-    # Check model registry
+    
+    # 3. Check model registry
     if hasattr(request.app.state, "model_registry") and request.app.state.model_registry:
         model_registry = request.app.state.model_registry
         registry_summary = model_registry.get_registry_summary()
         
-        components.append(ComponentStatus(
-            name="model_registry",
-            status="ok",
-            details={
+        # Check if registry has required model types
+        required_model_types = ["translation", "language_detection", "simplification"]
+        missing_types = []
+        for model_type in required_model_types:
+            if model_type not in registry_summary.get("supported_tasks", []):
+                missing_types.append(model_type)
+        
+        if missing_types:
+            registry_status = "degraded"
+            registry_details = {
                 "total_models": registry_summary["model_counts"]["total"],
                 "languages": len(registry_summary["supported_languages"]),
-                "tasks": len(registry_summary["supported_tasks"])
-            },
-            last_check=datetime.now()
-        ))
-    else:
+                "tasks": len(registry_summary["supported_tasks"]),
+                "missing_tasks": missing_types,
+                "warning": "Some required model types are missing from registry"
+            }
+        else:
+            registry_status = "healthy"
+            registry_details = {
+                "total_models": registry_summary["model_counts"]["total"],
+                "languages": len(registry_summary["supported_languages"]),
+                "tasks": len(registry_summary["supported_tasks"]),
+            }
+        
         components.append(ComponentStatus(
             name="model_registry",
-            status="error",
-            details={"error": "Not initialized"},
-            last_check=datetime.now()
+            status=registry_status,
+            details=registry_details,
+            last_check=check_time
         ))
+    else:
+        # Model registry is optional, so mark as warning instead of error
+        components.append(ComponentStatus(
+            name="model_registry",
+            status="warning",
+            details={"warning": "Not initialized (optional component)"},
+            last_check=check_time
+        ))
+    
+    # 4. Check database with connection verification
+    if (hasattr(request.app.state, "processor") and 
+        request.app.state.processor and 
+        hasattr(request.app.state.processor, "persistence_manager")):
         
-    # Check metrics collector
+        persistence_manager = request.app.state.processor.persistence_manager
+        db_details = {}
+        db_status = "healthy"
+        
+        # Check each database connection
+        for db_name, db_manager in [
+            ("users", persistence_manager.user_manager),
+            ("content", persistence_manager.content_manager),
+            ("progress", persistence_manager.progress_manager)
+        ]:
+            try:
+                # Test with a simple query
+                db_check_start = time.time()
+                test_query = "SELECT 1"
+                db_manager.execute_query(test_query)
+                db_response_time = time.time() - db_check_start
+                
+                db_details[f"{db_name}_db"] = {
+                    "status": "healthy",
+                    "response_time": db_response_time
+                }
+            except Exception as e:
+                logger.error(f"{db_name} database check error: {str(e)}", exc_info=True)
+                db_details[f"{db_name}_db"] = {
+                    "status": "error",
+                    "error": str(e)
+                }
+                db_status = "degraded"  # If any DB fails, mark as degraded
+        
+        # If all DBs failed, mark as error
+        if all(details.get("status") == "error" for details in db_details.values()):
+            db_status = "error"
+        
+        components.append(ComponentStatus(
+            name="database",
+            status=db_status,
+            details=db_details,
+            last_check=check_time
+        ))
+    else:
+        components.append(ComponentStatus(
+            name="database",
+            status="error",
+            details={"error": "Persistence manager not initialized"},
+            last_check=check_time
+        ))
+    
+    # 5. Check metrics collector
     if hasattr(request.app.state, "metrics") and request.app.state.metrics:
         metrics = request.app.state.metrics
-        system_metrics = metrics.get_system_metrics()
-        
-        components.append(ComponentStatus(
-            name="metrics",
-            status="ok",
-            details={
-                "total_requests": system_metrics["request_metrics"]["total_requests"],
-                "uptime": system_metrics["uptime_seconds"]
-            },
-            last_check=datetime.now()
-        ))
+        try:
+            system_metrics = metrics.get_system_metrics()
+            
+            components.append(ComponentStatus(
+                name="metrics",
+                status="healthy",
+                details={
+                    "total_requests": system_metrics["request_metrics"]["total_requests"],
+                    "successful_requests": system_metrics["request_metrics"]["successful_requests"],
+                    "failed_requests": system_metrics["request_metrics"]["failed_requests"],
+                    "avg_response_time": system_metrics["request_metrics"]["avg_response_time"],
+                    "uptime": system_metrics["uptime_seconds"]
+                },
+                last_check=check_time
+            ))
+        except Exception as e:
+            # Metrics collector exists but has an error
+            logger.error(f"Metrics collector error: {str(e)}", exc_info=True)
+            components.append(ComponentStatus(
+                name="metrics",
+                status="degraded",
+                details={"error": str(e)},
+                last_check=check_time
+            ))
     else:
+        # Metrics collector is optional, so mark as warning instead of error
         components.append(ComponentStatus(
             name="metrics",
-            status="error",
-            details={"error": "Not initialized"},
-            last_check=datetime.now()
+            status="warning",
+            details={"warning": "Not initialized (optional component)"},
+            last_check=check_time
         ))
-        
-    # Check audit logger
+    
+    # 6. Check audit logger
     if hasattr(request.app.state, "audit_logger") and request.app.state.audit_logger:
+        audit_logger = request.app.state.audit_logger
+        try:
+            # Verify audit logger functionality if possible
+            # This could be a simple check that doesn't actually write to logs
+            audit_details = {}
+            if hasattr(audit_logger, "enabled"):
+                audit_details["enabled"] = audit_logger.enabled
+            if hasattr(audit_logger, "log_level"):
+                audit_details["log_level"] = audit_logger.log_level
+            if hasattr(audit_logger, "log_path"):
+                audit_details["log_path"] = audit_logger.log_path
+                
+            components.append(ComponentStatus(
+                name="audit_logger",
+                status="healthy",
+                details=audit_details,
+                last_check=check_time
+            ))
+        except Exception as e:
+            logger.error(f"Audit logger error: {str(e)}", exc_info=True)
+            components.append(ComponentStatus(
+                name="audit_logger",
+                status="degraded",
+                details={"error": str(e)},
+                last_check=check_time
+            ))
+    else:
+        # Audit logger is optional, so mark as warning instead of error
         components.append(ComponentStatus(
             name="audit_logger",
-            status="ok",
-            last_check=datetime.now()
+            status="warning",
+            details={"warning": "Not initialized (optional component)"},
+            last_check=check_time
+        ))
+    
+    # 7. Check hardware info
+    if hasattr(request.app.state, "hardware_info") and request.app.state.hardware_info:
+        hardware_info = request.app.state.hardware_info
+        
+        # Gather hardware details
+        hw_details = {
+            "total_memory": hardware_info.get("total_memory", 0),
+            "available_memory": hardware_info.get("available_memory", 0),
+            "has_gpu": hardware_info.get("has_gpu", False),
+        }
+        
+        if hardware_info.get("has_gpu", False):
+            hw_details["gpu_name"] = hardware_info.get("gpu_name", "unknown")
+            hw_details["gpu_memory"] = hardware_info.get("gpu_memory", 0)
+        
+        components.append(ComponentStatus(
+            name="hardware",
+            status="healthy",
+            details=hw_details,
+            last_check=check_time
         ))
     else:
         components.append(ComponentStatus(
-            name="audit_logger",
-            status="error",
-            details={"error": "Not initialized"},
-            last_check=datetime.now()
+            name="hardware",
+            status="warning",
+            details={"warning": "Hardware info not available"},
+            last_check=check_time
         ))
+    
+    # 8. Check tokenizer availability - this is a critical component for many tasks
+    if hasattr(request.app.state, "tokenizer") and request.app.state.tokenizer:
+        tokenizer = request.app.state.tokenizer
+        tokenizer_details = {}
         
-    # Add more component checks as needed
+        if hasattr(tokenizer, "model_name"):
+            tokenizer_details["model_name"] = tokenizer.model_name
+        
+        components.append(ComponentStatus(
+            name="tokenizer",
+            status="healthy",
+            details=tokenizer_details,
+            last_check=check_time
+        ))
+    else:
+        components.append(ComponentStatus(
+            name="tokenizer",
+            status="error",
+            details={"error": "Tokenizer not initialized"},
+            last_check=check_time
+        ))
+    
+    # 9. Check cache system if available
+    if hasattr(request.app.state, "route_cache") and request.app.state.route_cache:
+        try:
+            # If we have a way to get cache stats, use it
+            from app.services.storage.route_cache import RouteCacheManager
+            cache_stats = await RouteCacheManager.get_all_stats()
+            
+            components.append(ComponentStatus(
+                name="cache",
+                status="healthy",
+                details={
+                    "instances": list(cache_stats.keys()),
+                    "stats": cache_stats
+                },
+                last_check=check_time
+            ))
+        except Exception as e:
+            logger.error(f"Cache check error: {str(e)}", exc_info=True)
+            components.append(ComponentStatus(
+                name="cache",
+                status="degraded",
+                details={"error": str(e)},
+                last_check=check_time
+            ))
+    else:
+        # Cache is optional
+        components.append(ComponentStatus(
+            name="cache",
+            status="warning",
+            details={"warning": "Cache not enabled or not initialized (optional component)"},
+            last_check=check_time
+        ))
     
     return components
 
