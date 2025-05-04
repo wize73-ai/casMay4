@@ -67,6 +67,17 @@
   - Added dependency checks for optimization requirements
   - Extended test reporting to include optimization details
 
+### Bug Fixes
+- Fixed RouteCache TTL expiration for per-item TTL settings
+  - Updated timestamp storage format to include TTL with timestamp
+  - Properly respect per-item TTL overrides
+  - Fixed LRU eviction logic to handle new timestamp format
+
+- Fixed BatchOptimizer test issues
+  - Completely rewrote tests to focus on component testing rather than e2e tests
+  - Fixed timeout handling during testing
+  - Added direct completion event setting in test process function
+
 ### Documentation
 - Added `OPTIMIZATIONS.md` detailing all optimizations
 - Updated API documentation in `app/api/README.md`
