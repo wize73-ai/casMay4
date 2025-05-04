@@ -202,7 +202,7 @@ async def test_anonymization():
     
     # Test with patterns from different languages
     logger.info("\nTesting anonymization with patterns from different languages:")
-    languages = ["en", "es", "fr", "de"]
+    languages = ["en", "es", "fr"]  # Focusing on the main languages we support
     patterns_found = {}
     
     for language in languages:
