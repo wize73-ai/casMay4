@@ -1,0 +1,52 @@
+{
+    "language_detection": {
+        "model_name": "papluca/xlm-roberta-base-language-detection",
+        "model_type": "transformers",
+        "tokenizer_name": "papluca/xlm-roberta-base-language-detection",
+        "task": "language_detection",
+        "framework": "transformers"
+    },
+    "translation": {
+        "model_name": "google/mt5-small",
+        "tokenizer_name": "google/mt5-small",
+        "task": "translation",
+        "type": "transformers",
+        "framework": "transformers"
+    },
+    "ner_detection": {
+        "model_name": "dslim/bert-base-NER",
+        "tokenizer_name": "dslim/bert-base-NER",
+        "task": "ner_detection",
+        "type": "transformers",
+        "framework": "transformers"
+    },
+    "simplifier": {
+        "model_name": "t5-small",
+        "tokenizer_name": "t5-small",
+        "task": "simplification",
+        "type": "transformers",
+        "model_class": "T5ForConditionalGeneration",
+        "framework": "transformers"
+    },
+    "rag_generator": {
+        "model_name": "google/mt5-small",
+        "tokenizer_name": "google/mt5-small",
+        "task": "rag_generation",
+        "type": "transformers",
+        "framework": "transformers"
+    },
+    "anonymizer": {
+        "model_name": "bert-base-cased",
+        "tokenizer_name": "bert-base-cased",
+        "task": "anonymization",
+        "type": "transformers",
+        "framework": "transformers"
+    },
+    "rag_retriever": {
+        "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "tokenizer_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "task": "embedding",
+        "type": "sentence-transformers",
+        "framework": "sentence-transformers"
+    }
+}

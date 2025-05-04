@@ -63,6 +63,55 @@ class RouteCache:
         
         logger.info(f"Route cache '{name}' initialized with max_size={max_size}, "
                    f"ttl_seconds={ttl_seconds}, bloom_compatible={bloom_compatible}")
+                   
+    @staticmethod
+    def bloom_compatible_key(route_path: str, params: Dict[str, Any]) -> str:
+        """
+        Generate a cache key compatible with Bloom Housing format.
+        
+        Args:
+            route_path: The API route path
+            params: Request parameters to include in the key
+            
+        Returns:
+            str: A deterministic cache key
+        """
+        try:
+            # Create a copy of params to avoid modifying the original
+            key_params = dict(params)
+            
+            # Remove fields that shouldn't affect the cache key
+            for field in ["cache", "verify", "apiKey", "request_id"]:
+                key_params.pop(field, None)
+                
+            # Map camelCase to snake_case if needed
+            camel_to_snake = {
+                "sourceLanguage": "source_language",
+                "targetLanguage": "target_language",
+                "formatPreservation": "preserve_formatting"
+            }
+            
+            for camel, snake in camel_to_snake.items():
+                if camel in key_params:
+                    key_params[snake] = key_params.pop(camel)
+            
+            # Combine route and params into a key
+            key_data = {
+                "route": route_path,
+                "params": key_params
+            }
+            
+            # Generate a deterministic string representation
+            serialized = json.dumps(key_data, sort_keys=True)
+            
+            # Hash the serialized data
+            key = hashlib.md5(serialized.encode("utf-8")).hexdigest()
+            return key
+            
+        except Exception as e:
+            logger.warning(f"Error generating bloom-compatible cache key: {str(e)}")
+            import uuid
+            return f"error_key_{str(uuid.uuid4())}"
     
     async def generate_key(self, request_data: Any) -> str:
         """

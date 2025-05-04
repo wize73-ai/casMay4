@@ -303,18 +303,25 @@ async def get_current_user(
         HTTPException: If authentication fails
     """
 
+    # Fixed development mode bypass with clear logging
     env = os.getenv("CASALINGUA_ENV", "production").lower()
-    logger.warning(f"🧪 get_current_user(): ENV = {env}")
-    if env != "production":
-        logger.warning("🧪 Bypass active — returning dev user")
-        request.state.user = {
+    logger.info(f"Auth check - Environment: {env}")
+    
+    if env == "development":
+        logger.warning("🧪 Development mode active — Auth bypass enabled, returning dev user")
+        # Create dev user with admin permissions
+        dev_user = {
             "id": "dev-user",
             "username": "developer",
             "role": "admin",
             "permissions": ["*"],
             "metadata": {}
         }
-        return request.state.user
+        # Store in request state
+        request.state.user = dev_user
+        # Log to logger instead of console for clarity
+        logger.warning(f"🔓 AUTH BYPASS: Dev user authenticated with admin role (ENV={env})")
+        return dev_user
 
     user = None
     

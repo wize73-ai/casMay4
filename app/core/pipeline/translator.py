@@ -220,9 +220,11 @@ class TranslationPipeline:
                 
                 logger.debug(f"Language detected: {language} (confidence: {confidence:.2f})")
                 
+                # Make sure to include detected_language in the response for API compatibility
                 if request.detailed:
                     return {
                         "language": language,
+                        "detected_language": language,  # Add this field for compatibility
                         "confidence": confidence,
                         "name": self.language_names.get(language, language),
                         "alternatives": detection_result.get("alternatives", [])
@@ -230,6 +232,7 @@ class TranslationPipeline:
                 else:
                     return {
                         "language": language,
+                        "detected_language": language,  # Add this field for compatibility
                         "confidence": confidence
                     }
             else:

@@ -661,6 +661,26 @@ class TranslationModelWrapper(BaseModelWrapper):
             metadata=metadata
         )
         
+    def _get_mbart_language_code(self, language_code):
+        """
+        Convert a standard language code to MBART-specific language code.
+        
+        Args:
+            language_code: Standard language code (e.g., 'en', 'es')
+            
+        Returns:
+            str: MBART-specific language code (e.g., 'en_XX', 'es_XX')
+        """
+        # MBART uses different language codes than our standard codes
+        mbart_lang_map = {
+            "en": "en_XX", "es": "es_XX", "fr": "fr_XX", "de": "de_DE", "it": "it_IT", 
+            "pt": "pt_XX", "nl": "nl_XX", "pl": "pl_PL", "ru": "ru_RU", "zh": "zh_CN", 
+            "ja": "ja_XX", "ko": "ko_KR", "ar": "ar_AR", "hi": "hi_IN", "tr": "tr_TR",
+            "vi": "vi_VN", "th": "th_TH", "id": "id_ID", "tl": "fil_PH", "ro": "ro_RO"
+        }
+        
+        return mbart_lang_map.get(language_code, f"{language_code}_XX")
+    
     def _get_mbart_fallback_translation(self, text, source_language, target_language):
         """
         Get a translation from MBART as fallback when MT5 fails.
@@ -679,17 +699,9 @@ class TranslationModelWrapper(BaseModelWrapper):
         # Log the fallback attempt
         logger.info(f"Attempting MBART fallback translation from {source_language} to {target_language}")
         
-        # Map source language and target language to MBART language codes
-        # MBART uses different language codes than our standard codes
-        mbart_lang_map = {
-            "en": "en_XX", "es": "es_XX", "fr": "fr_XX", "de": "de_DE", "it": "it_IT", 
-            "pt": "pt_XX", "nl": "nl_XX", "pl": "pl_PL", "ru": "ru_RU", "zh": "zh_CN", 
-            "ja": "ja_XX", "ko": "ko_KR", "ar": "ar_AR", "hi": "hi_IN", "tr": "tr_TR",
-            "vi": "vi_VN", "th": "th_TH", "id": "id_ID", "tl": "fil_PH", "ro": "ro_RO"
-        }
-        
-        mbart_source_lang = mbart_lang_map.get(source_language, f"{source_language}_XX")
-        mbart_target_lang = mbart_lang_map.get(target_language, f"{target_language}_XX")
+        # Get MBART language codes
+        mbart_source_lang = self._get_mbart_language_code(source_language)
+        mbart_target_lang = self._get_mbart_language_code(target_language)
         
         try:
             # Try to use an existing MBART model if available in our application state
