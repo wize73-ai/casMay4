@@ -36,7 +36,8 @@ jobs:
               'ci': ['ci', 'workflow', 'github action', 'pipeline'],
               'dependencies': ['dependency', 'dependencies', 'upgrade', 'version'],
               'translation': ['translation', 'language', 'mbart', 'multilingual'],
-              'anonymization': ['anonymization', 'anonymize', 'pii', 'privacy']
+              'anonymization': ['anonymization', 'anonymize', 'pii', 'privacy'],
+              'monitoring': ['health check', 'health-check', 'monitoring', 'readiness', 'liveness', 'probe']
             };
             
             // Collect detected categories
