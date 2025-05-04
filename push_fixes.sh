@@ -1,10 +1,7 @@
 #!/bin/bash
 
-# This script sets up a remote repository and pushes our model loading fixes
-# Only run this if you want to push to a remote repository
-
-# Set up the remote repository if needed
-# git remote add origin https://github.com/your-username/casalingua.git
+# This script pushes our model loading fixes to the remote repository
+# Remote repository: git@github.com:wize73-ai/casMay4.git
 
 # Push the fix/model-loading-issues branch
 git push -u origin fix/model-loading-issues
