@@ -6,6 +6,7 @@ Test script for MBART translation and anonymization changes.
 import asyncio
 import sys
 import logging
+import time
 from pathlib import Path
 
 # Configure basic logging
