@@ -95,22 +95,22 @@
       "model_cleanup_interval": 300,
       "preload_models": [
         "embedding_model",
-        "translation_en_es",
+        "translation_model",
         "language_detection"
       ],
       "embedding_model": {
         "path": "sentence-transformers/all-MiniLM-L6-v2",
         "type": "transformers"
       },
-      "translation_en_es": {
-        "model_name": "Helsinki-NLP/opus-mt-en-es",
+      "translation_model": {
+        "model_name": "facebook/mbart-large-50-many-to-many-mmt",
         "model_type": "seq2seq",
-        "tokenizer_name": "Helsinki-NLP/opus-mt-en-es"
+        "tokenizer_name": "facebook/mbart-large-50-many-to-many-mmt"
       },
-      "translation_es_en": {
-        "model_name": "Helsinki-NLP/opus-mt-es-en",
+      "translation_small": {
+        "model_name": "facebook/mbart-large-50-one-to-many-mmt",
         "model_type": "seq2seq",
-        "tokenizer_name": "Helsinki-NLP/opus-mt-es-en"
+        "tokenizer_name": "facebook/mbart-large-50-one-to-many-mmt"
       },
       "language_detection": {
         "model_name": "papluca/xlm-roberta-base-language-detection",
@@ -121,9 +121,8 @@
     "task_model_mapping": {
       "embedding": "embedding_model",
       "language_detection": "language_detection",
-      "translation_en-es": "translation_en_es",
-      "translation_es-en": "translation_es_en",
-      "translation": "translation_en_es"
+      "translation": "translation_model",
+      "translation_small": "translation_small"
     },
     "language_model_mapping": {
       "en": {

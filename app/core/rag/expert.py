@@ -111,14 +111,18 @@ class RAGExpert:
             # Load embedding model
             self.embedding_model = None
             if self.model_manager is not None:
-                model, _ = await self.model_manager.get_model(self.embedding_model_key)
-                self.embedding_model = model
-                # Get embedding dimension if available
-                if hasattr(model, "get_sentence_embedding_dimension"):
-                    self.embedding_dim = model.get_sentence_embedding_dimension()
-                elif hasattr(model, "config") and hasattr(model.config, "hidden_size"):
-                    self.embedding_dim = model.config.hidden_size
-                else:
+                try:
+                    model_info = await self.model_manager.load_model(self.embedding_model_key)
+                    self.embedding_model = model_info.get("model") if model_info else None
+                    # Get embedding dimension if available
+                    if self.embedding_model and hasattr(self.embedding_model, "get_sentence_embedding_dimension"):
+                        self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+                    elif self.embedding_model and hasattr(self.embedding_model, "config") and hasattr(self.embedding_model.config, "hidden_size"):
+                        self.embedding_dim = self.embedding_model.config.hidden_size
+                    else:
+                        self.embedding_dim = 768
+                except Exception as e:
+                    logger.warning(f"Could not load embedding model: {e}, using fallback")
                     self.embedding_dim = 768
             elif SENTENCE_TRANSFORMERS_AVAILABLE:
                 model_name = self.config.get(

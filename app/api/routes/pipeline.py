@@ -15,6 +15,7 @@ import json
 import uuid
 import logging
 import os
+import asyncio
 from typing import Dict, List, Any, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Path, Body, Request, status, File, UploadFile, Form
 from pydantic import BaseModel, Field, validator
@@ -89,7 +90,7 @@ async def translate_text(
                 "text": translation_request.text,
                 "source_language": translation_request.source_language,
                 "target_language": translation_request.target_language,
-                "model_id": getattr(translation_request, "model_id", None),
+                "model_id": translation_request.model_name,  # Use model_name from TranslationRequest
                 "preserve_formatting": translation_request.preserve_formatting,
                 "formality": translation_request.formality,
                 "verify": verification or translation_request.verify
@@ -103,13 +104,26 @@ async def translate_text(
                 logger.info(f"Cache hit for translation request {request_id}")
                 
                 # Record cache hit metrics in background
+                # Extract translated_text safely from cached response
+                if isinstance(cached_response, dict) and "data" in cached_response:
+                    if hasattr(cached_response["data"], "translated_text"):
+                        output_size = len(cached_response["data"].translated_text)
+                    elif isinstance(cached_response["data"], dict) and "translated_text" in cached_response["data"]:
+                        output_size = len(cached_response["data"]["translated_text"])
+                    else:
+                        output_size = 0
+                        logger.warning(f"Could not determine output size from cached response: {type(cached_response)}")
+                else:
+                    output_size = 0
+                    logger.warning(f"Cached response structure unexpected: {type(cached_response)}")
+                
                 background_tasks.add_task(
                     metrics.record_pipeline_execution,
                     pipeline_id="translation",
                     operation="translate_cached",
                     duration=time.time() - start_time,
                     input_size=len(translation_request.text),
-                    output_size=len(cached_response["data"].translated_text),
+                    output_size=output_size,
                     success=True,
                     metadata={
                         "source_language": translation_request.source_language,
@@ -135,11 +149,32 @@ async def translate_text(
                     status_code=200
                 )
                 
-                # Update cached response metadata
-                cached_response["metadata"].request_id = request_id
-                cached_response["metadata"].timestamp = time.time()
-                cached_response["metadata"].process_time = time.time() - start_time
-                cached_response["metadata"].cached = True
+                # Update cached response metadata safely
+                if isinstance(cached_response, dict) and "metadata" in cached_response:
+                    # Check if metadata is a dict or an object with attributes
+                    if isinstance(cached_response["metadata"], dict):
+                        cached_response["metadata"]["request_id"] = request_id
+                        cached_response["metadata"]["timestamp"] = time.time()
+                        cached_response["metadata"]["process_time"] = time.time() - start_time
+                        cached_response["metadata"]["cached"] = True
+                    elif hasattr(cached_response["metadata"], "request_id"):
+                        # It's an object with attributes (like MetadataModel)
+                        cached_response["metadata"].request_id = request_id
+                        cached_response["metadata"].timestamp = time.time()
+                        cached_response["metadata"].process_time = time.time() - start_time
+                        cached_response["metadata"].cached = True
+                    else:
+                        # Create new metadata
+                        logger.warning(f"Creating new metadata for cached response")
+                        cached_response["metadata"] = MetadataModel(
+                            request_id=request_id,
+                            timestamp=time.time(),
+                            version=request.app.state.config.get("version", "1.0.0"),
+                            process_time=time.time() - start_time,
+                            cached=True
+                        )
+                else:
+                    logger.warning(f"Cached response has no metadata field: {type(cached_response)}")
                 
                 # Return cached response
                 return cached_response
@@ -165,7 +200,7 @@ async def translate_text(
             text=translation_request.text,
             source_language=translation_request.source_language,
             target_language=translation_request.target_language,
-            model_id=getattr(translation_request, "model_id", None),
+            model_id=getattr(translation_request, "model_name", None),  # Use model_name instead of model_id
             glossary_id=translation_request.glossary_id,
             preserve_formatting=translation_request.preserve_formatting,
             formality=translation_request.formality,
@@ -173,6 +208,10 @@ async def translate_text(
             user_id=current_user["id"],
             request_id=request_id
         )
+        
+        # Ensure source_text is included in the result
+        if "source_text" not in translation_result:
+            translation_result["source_text"] = translation_request.text
         
         # Calculate process time
         process_time = time.time() - start_time
@@ -205,21 +244,28 @@ async def translate_text(
             success=True
         )
         
-        # Create result model
-        result = TranslationResult(
-            source_text=translation_request.text,
-            translated_text=translation_result["translated_text"],
-            source_language=translation_result.get("detected_language", translation_request.source_language),
-            target_language=translation_request.target_language,
-            confidence=translation_result.get("confidence", 0.0),
-            model_id=translation_result.get("model_id", "default"),
-            process_time=process_time,
-            word_count=translation_result.get("word_count", 0),
-            character_count=len(translation_request.text),
-            detected_language=translation_result.get("detected_language") if translation_request.source_language == "auto" else None,
-            verified=translation_result.get("verified", False),
-            verification_score=translation_result.get("verification_score", None)
-        )
+        # Log the received result for debugging
+        logger.debug(f"Raw translation result: {translation_result}")
+        
+        # Create result dictionary manually with all required fields
+        result_dict = {
+            "source_text": translation_request.text,
+            "translated_text": translation_result.get("translated_text", ""),
+            "source_language": translation_result.get("source_language") or translation_request.source_language or "auto",
+            "target_language": translation_request.target_language,
+            "confidence": translation_result.get("confidence", 0.0),
+            "model_id": translation_result.get("model_id", "default"),
+            "process_time": process_time,
+            "word_count": len(translation_request.text.split()),
+            "character_count": len(translation_request.text),
+            "detected_language": translation_result.get("detected_language"),
+            "verified": translation_result.get("verified", False),
+            "verification_score": translation_result.get("verification_score", None),
+            "model_used": translation_result.get("model_used", "translation")
+        }
+        
+        # Create result model from dictionary
+        result = TranslationResult(**result_dict)
         
         # Create response
         response = BaseResponse(
@@ -288,547 +334,6 @@ async def translate_text(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Translation error: {str(e)}"
-        )
-
-@router.post(
-    "/translate/batch",
-    response_model=BaseResponse[List[TranslationResult]],
-    status_code=status.HTTP_200_OK,
-    summary="Batch translate texts",
-    description="Translates multiple texts in a single request."
-)
-async def batch_translate(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    batch_request: BatchTranslationRequest = Body(...),
-    current_user: Dict[str, Any] = Depends(get_current_user),
-    use_cache: bool = Query(True, description="Whether to use request-level caching"),
-    smart_batching: bool = Query(True, description="Whether to use smart batching for optimization")
-):
-    """
-    Translate multiple texts in a single request.
-    
-    This endpoint processes multiple translation requests simultaneously,
-    improving efficiency for batch translation needs.
-    """
-    start_time = time.time()
-    request_id = str(uuid.uuid4())
-    
-    try:
-        # Get application components from state
-        processor = request.app.state.processor
-        if processor is None:
-            raise HTTPException(status_code=503, detail="Processor not initialized")
-        metrics = request.app.state.metrics
-        audit_logger = request.app.state.audit_logger
-        
-        # Log request to audit log
-        await audit_logger.log_api_request(
-            endpoint="/pipeline/translate/batch",
-            method="POST",
-            user_id=current_user["id"],
-            source_ip=request.client.host,
-            request_id=request_id,
-            request_params={
-                "source_language": batch_request.source_language,
-                "target_language": batch_request.target_language,
-                "text_count": len(batch_request.texts),
-                "model_id": batch_request.model_id,
-                "smart_batching": smart_batching
-            }
-        )
-        
-        # Check if cache is enabled
-        if use_cache and hasattr(request.app.state, "route_cache"):
-            from app.services.storage.route_cache import RouteCacheManager, RouteCache
-            translation_cache = await RouteCacheManager.get_cache(
-                name="translation_batch",
-                max_size=1000,
-                ttl_seconds=3600,  # 1 hour
-                bloom_compatible=True
-            )
-        
-        # Process batch translation with smart batching if enabled
-        if smart_batching:
-            from app.api.middleware.batch_optimizer import get_batch_processor
-            
-            # Create a batch processor for translation
-            async def process_batch_translation(texts_batch):
-                """Process a batch of translations."""
-                # Process the batch via processor
-                batch_results = await processor.process_batch_translation(
-                    texts=texts_batch,
-                    source_language=batch_request.source_language,
-                    target_language=batch_request.target_language,
-                    model_id=batch_request.model_id,
-                    glossary_id=batch_request.glossary_id,
-                    preserve_formatting=batch_request.preserve_formatting,
-                    user_id=current_user["id"],
-                    request_id=f"{request_id}_batch"
-                )
-                return batch_results
-            
-            # Get or create batch processor for this endpoint
-            batch_processor = get_batch_processor(
-                endpoint_path="/pipeline/translate",
-                processor_func=process_batch_translation,
-                max_batch_size=50,  # Maximum number of texts in a batch
-                max_batch_wait_ms=200,  # Maximum time to wait for batch to fill
-                min_batch_size=5  # Minimum number of texts to process as a batch
-            )
-            
-            # Prepare results list
-            batch_results = []
-            
-            # Try to use cache for individual texts if enabled
-            if use_cache and hasattr(request.app.state, "route_cache"):
-                # Process each text potentially from cache or through batch processor
-                cache_hits = 0
-                processed_count = 0
-                
-                # Create tasks for all texts
-                tasks = []
-                cache_keys = []
-                
-                for text in batch_request.texts:
-                    # Generate cache key for this specific translation
-                    cache_params = {
-                        "text": text,
-                        "source_language": batch_request.source_language,
-                        "target_language": batch_request.target_language,
-                        "model_id": batch_request.model_id,
-                        "preserve_formatting": batch_request.preserve_formatting
-                    }
-                    cache_key = RouteCache.bloom_compatible_key("/pipeline/translate", cache_params)
-                    cache_keys.append(cache_key)
-                    
-                    # Create task to get from cache or process
-                    async def process_item(item_text, item_key):
-                        # Try to get from cache first
-                        cached_result = await translation_cache.get(item_key)
-                        if cached_result:
-                            nonlocal cache_hits
-                            cache_hits += 1
-                            if "data" in cached_result:
-                                return cached_result["data"]
-                            return cached_result
-                        
-                        # Not in cache, process through batch processor
-                        nonlocal processed_count
-                        processed_count += 1
-                        return await batch_processor.process(item_text)
-                    
-                    tasks.append(process_item(text, cache_key))
-                
-                # Run all tasks concurrently
-                batch_results = await asyncio.gather(*tasks)
-                
-                # Store results in cache
-                for i, (text, result, cache_key) in enumerate(zip(batch_request.texts, batch_results, cache_keys)):
-                    if use_cache and isinstance(result, dict) and "translated_text" in result:
-                        await translation_cache.set(cache_key, result)
-                
-                logger.info(f"Batch translation: {cache_hits} cache hits, {processed_count} processed")
-            else:
-                # No caching, process entire batch normally
-                batch_results = await processor.process_batch_translation(
-                    texts=batch_request.texts,
-                    source_language=batch_request.source_language,
-                    target_language=batch_request.target_language,
-                    model_id=batch_request.model_id,
-                    glossary_id=batch_request.glossary_id,
-                    preserve_formatting=batch_request.preserve_formatting,
-                    user_id=current_user["id"],
-                    request_id=request_id
-                )
-        else:
-            # No smart batching, process entire batch as one
-            batch_results = await processor.process_batch_translation(
-                texts=batch_request.texts,
-                source_language=batch_request.source_language,
-                target_language=batch_request.target_language,
-                model_id=batch_request.model_id,
-                glossary_id=batch_request.glossary_id,
-                preserve_formatting=batch_request.preserve_formatting,
-                user_id=current_user["id"],
-                request_id=request_id
-            )
-        
-        # Calculate process time
-        process_time = time.time() - start_time
-        
-        # Prepare results
-        results = []
-        total_input_size = sum(len(text) for text in batch_request.texts)
-        
-        # Handle different result formats (from cache vs. batch processor)
-        translated_texts = []
-        for i, result in enumerate(batch_results):
-            # Extract translated text based on result type
-            if isinstance(result, dict):
-                if "translated_text" in result:
-                    translated_text = result["translated_text"]
-                    source_lang = result.get("source_language", batch_request.source_language)
-                    confidence = result.get("confidence", 0.0)
-                    model_id = result.get("model_id", "default")
-                    process_time_item = result.get("process_time", 0.0)
-                    word_count = result.get("word_count", 0)
-                    detected_lang = result.get("detected_language")
-                    verified = result.get("verified", False)
-                    verification_score = result.get("verification_score")
-                elif hasattr(result, "translated_text"):
-                    # It's a TranslationResult model
-                    translated_text = result.translated_text
-                    source_lang = result.source_language
-                    confidence = result.confidence
-                    model_id = result.model_id
-                    process_time_item = result.process_time
-                    word_count = result.word_count
-                    detected_lang = result.detected_language
-                    verified = result.verified
-                    verification_score = result.verification_score
-                else:
-                    # Unexpected format, use defaults
-                    translated_text = str(result)
-                    source_lang = batch_request.source_language
-                    confidence = 0.0
-                    model_id = "default"
-                    process_time_item = 0.0
-                    word_count = 0
-                    detected_lang = None
-                    verified = False
-                    verification_score = None
-            else:
-                # Result is not a dict, convert to string
-                translated_text = str(result)
-                source_lang = batch_request.source_language
-                confidence = 0.0
-                model_id = "default"
-                process_time_item = 0.0
-                word_count = 0
-                detected_lang = None
-                verified = False
-                verification_score = None
-            
-            translated_texts.append(translated_text)
-            
-            # Create result model
-            results.append(TranslationResult(
-                source_text=batch_request.texts[i],
-                translated_text=translated_text,
-                source_language=source_lang,
-                target_language=batch_request.target_language,
-                confidence=confidence,
-                model_id=model_id,
-                process_time=process_time_item,
-                word_count=word_count,
-                character_count=len(batch_request.texts[i]),
-                detected_language=detected_lang if batch_request.source_language == "auto" else None,
-                verified=verified,
-                verification_score=verification_score
-            ))
-        
-        # Calculate total output size
-        total_output_size = sum(len(text) for text in translated_texts)
-            
-        # Record metrics in background
-        background_tasks.add_task(
-            metrics.record_pipeline_execution,
-            pipeline_id="translation",
-            operation="batch_translate",
-            duration=process_time,
-            input_size=total_input_size,
-            output_size=total_output_size,
-            success=True,
-            metadata={
-                "source_language": batch_request.source_language,
-                "target_language": batch_request.target_language,
-                "batch_size": len(batch_request.texts),
-                "smart_batching": smart_batching
-            }
-        )
-        
-        # Create response
-        response = BaseResponse(
-            status=StatusEnum.SUCCESS,
-            message=f"Batch translation of {len(batch_request.texts)} texts completed successfully",
-            data=results,
-            metadata=MetadataModel(
-                request_id=request_id,
-                timestamp=time.time(),
-                version=request.app.state.config.get("version", "1.0.0"),
-                process_time=process_time,
-                cached=False  # This refers to the whole batch, not individual items
-            ),
-            errors=None,
-            pagination=None
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Batch translation error: {str(e)}", exc_info=True)
-        
-        # Record error metrics in background
-        background_tasks.add_task(
-            metrics.record_pipeline_execution,
-            pipeline_id="translation",
-            operation="batch_translate",
-            duration=time.time() - start_time,
-            input_size=sum(len(text) for text in batch_request.texts),
-            output_size=0,
-            success=False,
-            metadata={
-                "error": str(e),
-                "source_language": batch_request.source_language,
-                "target_language": batch_request.target_language,
-                "batch_size": len(batch_request.texts),
-                "smart_batching": smart_batching
-            }
-        )
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Batch translation error: {str(e)}"
-        )
-
-# ----- Document Translation Endpoints -----
-
-@router.post(
-    "/translate/document",
-    response_model=DocumentTranslationResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Translate document",
-    description="Uploads and translates a document."
-)
-async def translate_document(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    source_language: str = Form(...),
-    target_language: str = Form(...),
-    model_id: Optional[str] = Form(None),
-    glossary_id: Optional[str] = Form(None),
-    preserve_layout: bool = Form(True),
-    callback_url: Optional[str] = Form(None),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Upload and translate a document.
-    
-    This endpoint handles document translation requests and processes
-    documents asynchronously, providing a task ID for status tracking.
-    """
-    start_time = time.time()
-    request_id = str(uuid.uuid4())
-    task_id = str(uuid.uuid4())
-    
-    try:
-        # Get application components from state
-        processor = request.app.state.processor
-        if processor is None:
-            raise HTTPException(status_code=503, detail="Processor not initialized")
-        metrics = request.app.state.metrics
-        audit_logger = request.app.state.audit_logger
-        
-        # Read file content
-        file_content = await file.read()
-        file_size = len(file_content)
-        
-        # Log request to audit log
-        await audit_logger.log_api_request(
-            endpoint="/pipeline/translate/document",
-            method="POST",
-            user_id=current_user["id"],
-            source_ip=request.client.host,
-            request_id=request_id,
-            request_params={
-                "filename": file.filename,
-                "file_size": file_size,
-                "source_language": source_language,
-                "target_language": target_language,
-                "model_id": model_id
-            }
-        )
-        
-        # Queue document for translation
-        doc_request = DocumentTranslationRequest(
-            document_id=task_id,  # Use task_id as document_id
-            source_language=source_language,
-            target_language=target_language,
-            model_id=model_id,
-            glossary_id=glossary_id,
-            output_format=None,  # Use original format
-            callback_url=callback_url,
-            preserve_layout=preserve_layout,
-            translate_tracked_changes=False,
-            translate_comments=False
-        )
-        
-        # Start processing in background
-        background_tasks.add_task(
-            processor.process_document_translation,
-            document=file_content,
-            filename=file.filename,
-            request=doc_request,
-            user_id=current_user["id"],
-            task_id=task_id,
-            request_id=request_id
-        )
-        
-        # Prepare initial result
-        result = DocumentTranslationResult(
-            document_id=task_id,
-            filename=file.filename,
-            source_language=source_language,
-            target_language=target_language,
-            status="processing",
-            progress=0.0,
-            translated_filename=None,
-            page_count=None,
-            word_count=None,
-            start_time=time.time(),
-            end_time=None,
-            process_time=None,
-            download_url=None
-        )
-        
-        # Record request metrics in background
-        background_tasks.add_task(
-            metrics.record_pipeline_execution,
-            pipeline_id="document_translation",
-            operation="start",
-            duration=time.time() - start_time,
-            input_size=file_size,
-            output_size=0,
-            success=True,
-            metadata={
-                "filename": file.filename,
-                "source_language": source_language,
-                "target_language": target_language,
-                "task_id": task_id
-            }
-        )
-        
-        # Create response
-        response = BaseResponse(
-            status=StatusEnum.SUCCESS,
-            message="Document translation started",
-            data=result,
-            metadata=MetadataModel(
-                request_id=request_id,
-                timestamp=time.time(),
-                version=request.app.state.config.get("version", "1.0.0"),
-                process_time=time.time() - start_time
-            ),
-            errors=None,
-            pagination=None
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Document translation error: {str(e)}", exc_info=True)
-        
-        # Record error metrics in background
-        background_tasks.add_task(
-            metrics.record_pipeline_execution,
-            pipeline_id="document_translation",
-            operation="start",
-            duration=time.time() - start_time,
-            input_size=len(await file.read()),
-            output_size=0,
-            success=False,
-            metadata={
-                "error": str(e),
-                "filename": file.filename,
-                "source_language": source_language,
-                "target_language": target_language
-            }
-        )
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Document translation error: {str(e)}"
-        )
-
-@router.get(
-    "/translate/document/{task_id}",
-    response_model=DocumentTranslationResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Get document translation status",
-    description="Retrieves the status of a document translation task."
-)
-async def get_document_translation_status(
-    request: Request,
-    task_id: str = Path(..., description="Task identifier"),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Get status of a document translation task.
-    
-    This endpoint allows clients to check the status of an ongoing
-    document translation task and retrieve results when complete.
-    """
-    start_time = time.time()
-    
-    try:
-        # Get application components from state
-        processor = request.app.state.processor
-        if processor is None:
-            raise HTTPException(status_code=503, detail="Processor not initialized")
-        
-        # Get task status
-        task_status = await processor.get_task_status(task_id)
-        
-        if not task_status:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Translation task not found: {task_id}"
-            )
-            
-        # Prepare result
-        result = DocumentTranslationResult(
-            document_id=task_id,
-            filename=task_status.get("filename", ""),
-            source_language=task_status.get("source_language", ""),
-            target_language=task_status.get("target_language", ""),
-            status=task_status.get("status", "unknown"),
-            progress=task_status.get("progress", 0.0),
-            translated_filename=task_status.get("translated_filename"),
-            page_count=task_status.get("page_count"),
-            word_count=task_status.get("word_count"),
-            start_time=task_status.get("start_time"),
-            end_time=task_status.get("end_time"),
-            process_time=task_status.get("process_time"),
-            download_url=task_status.get("download_url")
-        )
-        
-        # Create response
-        response = BaseResponse(
-            status=StatusEnum.SUCCESS,
-            message=f"Document translation status: {result.status}",
-            data=result,
-            metadata=MetadataModel(
-                request_id=str(uuid.uuid4()),
-                timestamp=time.time(),
-                version=request.app.state.config.get("version", "1.0.0"),
-                process_time=time.time() - start_time
-            ),
-            errors=None,
-            pagination=None
-        )
-        
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving document translation status: {str(e)}", exc_info=True)
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving translation status: {str(e)}"
         )
 
 # ----- Language Detection Endpoints -----
@@ -972,6 +477,355 @@ async def detect_language_alias(
         current_user=current_user
     )
 
+# ----- Text Simplification Endpoint -----
+
+class SimplificationRequest(BaseModel):
+    text: str
+    language: str = "en"
+    target_level: str = "simple"
+    model_id: Optional[str] = None
+
+@router.post(
+    "/simplify",
+    response_model=BaseResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Simplify text",
+    description="Simplifies complex text to make it more readable."
+)
+async def simplify_text(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    simplification_request: SimplificationRequest = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Simplify complex text to make it more readable.
+    
+    This endpoint processes text to reduce complexity while maintaining meaning,
+    making content more accessible to a wider audience.
+    """
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    
+    try:
+        # Get application components from state
+        processor = request.app.state.processor
+        if processor is None:
+            raise HTTPException(status_code=503, detail="Processor not initialized")
+        metrics = request.app.state.metrics
+        audit_logger = request.app.state.audit_logger
+        
+        # Log request to audit log
+        await audit_logger.log_api_request(
+            endpoint="/pipeline/simplify",
+            method="POST",
+            user_id=current_user["id"],
+            source_ip=request.client.host,
+            request_id=request_id,
+            request_params={
+                "text_length": len(simplification_request.text),
+                "language": simplification_request.language,
+                "target_level": simplification_request.target_level
+            }
+        )
+        
+        # Process simplification
+        if hasattr(processor, "simplify_text"):
+            simplification_result = await processor.simplify_text(
+                text=simplification_request.text,
+                target_level=simplification_request.target_level,
+                language=simplification_request.language
+            )
+        elif hasattr(processor, "process_simplification"):
+            simplification_result = await processor.process_simplification(
+                text=simplification_request.text,
+                level=simplification_request.target_level,
+                language=simplification_request.language
+            )
+        else:
+            # Try to use existing methods in the UnifiedProcessor
+            # that may be used in the test_direct_model_calls.py
+            async def run_simplification():
+                # Create a structured input similar to what the processor might expect
+                input_data = {
+                    "text": simplification_request.text,
+                    "target_level": simplification_request.target_level,
+                    "language": simplification_request.language
+                }
+                
+                # Try to use the simplification pipeline directly if available
+                if hasattr(processor, "simplification_pipeline") and processor.simplification_pipeline:
+                    return await processor.simplification_pipeline.simplify(
+                        text=simplification_request.text,
+                        language=simplification_request.language,
+                        level=int(simplification_request.target_level) if simplification_request.target_level.isdigit() else 1,
+                        target_grade_level=None
+                    )
+                
+                # Fallback to generic processing
+                return await processor._process_text(
+                    text=simplification_request.text, 
+                    options={
+                        "simplify": True, 
+                        "target_level": simplification_request.target_level,
+                        "source_language": simplification_request.language
+                    }, 
+                    metadata={}
+                )
+            
+            # Attempt to run simplification
+            simplification_result = await run_simplification()
+            
+            # Handle different response formats
+            if isinstance(simplification_result, dict):
+                if "simplified_text" in simplification_result:
+                    simplified_text = simplification_result["simplified_text"]
+                elif "processed_text" in simplification_result:
+                    simplified_text = simplification_result["processed_text"]
+                else:
+                    simplified_text = str(simplification_result)
+            else:
+                simplified_text = str(simplification_result)
+        
+        # Calculate process time
+        process_time = time.time() - start_time
+        
+        # Record metrics in background
+        background_tasks.add_task(
+            metrics.record_pipeline_execution,
+            pipeline_id="simplification",
+            operation="simplify",
+            duration=process_time,
+            input_size=len(simplification_request.text),
+            output_size=len(simplified_text) if isinstance(simplified_text, str) else 0,
+            success=True,
+            metadata={
+                "language": simplification_request.language,
+                "target_level": simplification_request.target_level
+            }
+        )
+        
+        # Create response
+        response = BaseResponse(
+            status=StatusEnum.SUCCESS,
+            message="Text simplification completed successfully",
+            data={
+                "original_text": simplification_request.text,
+                "simplified_text": simplified_text,
+                "language": simplification_request.language,
+                "target_level": simplification_request.target_level,
+                "process_time": process_time
+            },
+            metadata=MetadataModel(
+                request_id=request_id,
+                timestamp=time.time(),
+                version=request.app.state.config.get("version", "1.0.0"),
+                process_time=process_time
+            ),
+            errors=None,
+            pagination=None
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Text simplification error: {str(e)}", exc_info=True)
+        
+        # Record error metrics in background
+        background_tasks.add_task(
+            metrics.record_pipeline_execution,
+            pipeline_id="simplification",
+            operation="simplify",
+            duration=time.time() - start_time,
+            input_size=len(simplification_request.text),
+            output_size=0,
+            success=False,
+            metadata={
+                "error": str(e),
+                "language": simplification_request.language,
+                "target_level": simplification_request.target_level
+            }
+        )
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Text simplification error: {str(e)}"
+        )
+
+# ----- Text Anonymization Endpoint -----
+
+class AnonymizationRequest(BaseModel):
+    text: str
+    language: str = "en"
+    strategy: str = "mask"
+    model_id: Optional[str] = None
+
+@router.post(
+    "/anonymize",
+    response_model=BaseResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Anonymize text",
+    description="Anonymizes personally identifiable information (PII) in text."
+)
+async def anonymize_text(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    anonymization_request: AnonymizationRequest = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Anonymize personally identifiable information (PII) in text.
+    
+    This endpoint detects and masks/replaces personal information like names,
+    email addresses, phone numbers, and other sensitive data.
+    """
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    
+    try:
+        # Get application components from state
+        processor = request.app.state.processor
+        if processor is None:
+            raise HTTPException(status_code=503, detail="Processor not initialized")
+        metrics = request.app.state.metrics
+        audit_logger = request.app.state.audit_logger
+        
+        # Log request to audit log
+        await audit_logger.log_api_request(
+            endpoint="/pipeline/anonymize",
+            method="POST",
+            user_id=current_user["id"],
+            source_ip=request.client.host,
+            request_id=request_id,
+            request_params={
+                "text_length": len(anonymization_request.text),
+                "language": anonymization_request.language,
+                "strategy": anonymization_request.strategy
+            }
+        )
+        
+        # Process anonymization
+        if hasattr(processor, "anonymize_text"):
+            anonymized_text = await processor.anonymize_text(
+                text=anonymization_request.text,
+                language=anonymization_request.language
+            )
+        elif hasattr(processor, "process_anonymization"):
+            anonymized_text = await processor.process_anonymization(
+                text=anonymization_request.text,
+                language=anonymization_request.language
+            )
+        else:
+            # Try to use existing methods in the UnifiedProcessor
+            async def run_anonymization():
+                # Create a structured input similar to what the processor might expect
+                input_data = {
+                    "text": anonymization_request.text,
+                    "language": anonymization_request.language,
+                    "strategy": anonymization_request.strategy
+                }
+                
+                # Try to use the anonymization pipeline directly if available
+                if hasattr(processor, "anonymization_pipeline") and processor.anonymization_pipeline:
+                    return await processor.anonymization_pipeline.process(
+                        text=anonymization_request.text,
+                        language=anonymization_request.language,
+                        options={"strategy": anonymization_request.strategy}
+                    )
+                
+                # Fallback to generic processing
+                return await processor._process_text(
+                    text=anonymization_request.text, 
+                    options={
+                        "anonymize": True, 
+                        "anonymization_strategy": anonymization_request.strategy,
+                        "source_language": anonymization_request.language
+                    }, 
+                    metadata={}
+                )
+            
+            # Attempt to run anonymization
+            anonymization_result = await run_anonymization()
+            
+            # Handle different response formats
+            if isinstance(anonymization_result, dict):
+                if "anonymized_text" in anonymization_result:
+                    anonymized_text = anonymization_result["anonymized_text"]
+                elif "processed_text" in anonymization_result:
+                    anonymized_text = anonymization_result["processed_text"]
+                else:
+                    anonymized_text = str(anonymization_result)
+            elif isinstance(anonymization_result, tuple) and len(anonymization_result) == 2:
+                # Some anonymization methods return (text, entities)
+                anonymized_text = anonymization_result[0]
+            else:
+                anonymized_text = str(anonymization_result)
+        
+        # Calculate process time
+        process_time = time.time() - start_time
+        
+        # Record metrics in background
+        background_tasks.add_task(
+            metrics.record_pipeline_execution,
+            pipeline_id="anonymization",
+            operation="anonymize",
+            duration=process_time,
+            input_size=len(anonymization_request.text),
+            output_size=len(anonymized_text) if isinstance(anonymized_text, str) else 0,
+            success=True,
+            metadata={
+                "language": anonymization_request.language,
+                "strategy": anonymization_request.strategy
+            }
+        )
+        
+        # Create response
+        response = BaseResponse(
+            status=StatusEnum.SUCCESS,
+            message="Text anonymization completed successfully",
+            data={
+                "original_text": anonymization_request.text,
+                "anonymized_text": anonymized_text,
+                "language": anonymization_request.language,
+                "strategy": anonymization_request.strategy,
+                "process_time": process_time
+            },
+            metadata=MetadataModel(
+                request_id=request_id,
+                timestamp=time.time(),
+                version=request.app.state.config.get("version", "1.0.0"),
+                process_time=process_time
+            ),
+            errors=None,
+            pagination=None
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Text anonymization error: {str(e)}", exc_info=True)
+        
+        # Record error metrics in background
+        background_tasks.add_task(
+            metrics.record_pipeline_execution,
+            pipeline_id="anonymization",
+            operation="anonymize",
+            duration=time.time() - start_time,
+            input_size=len(anonymization_request.text),
+            output_size=0,
+            success=False,
+            metadata={
+                "error": str(e),
+                "language": anonymization_request.language,
+                "strategy": anonymization_request.strategy
+            }
+        )
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Text anonymization error: {str(e)}"
+        )
+
 # ----- Text Analysis Endpoints -----
 
 @router.post(
@@ -1048,11 +902,32 @@ async def analyze_text(
                     }
                 )
                 
-                # Update cached response metadata
-                cached_response["metadata"].request_id = request_id
-                cached_response["metadata"].timestamp = time.time()
-                cached_response["metadata"].process_time = time.time() - start_time
-                cached_response["metadata"].cached = True
+                # Update cached response metadata safely
+                if isinstance(cached_response, dict) and "metadata" in cached_response:
+                    # Check if metadata is a dict or an object with attributes
+                    if isinstance(cached_response["metadata"], dict):
+                        cached_response["metadata"]["request_id"] = request_id
+                        cached_response["metadata"]["timestamp"] = time.time()
+                        cached_response["metadata"]["process_time"] = time.time() - start_time
+                        cached_response["metadata"]["cached"] = True
+                    elif hasattr(cached_response["metadata"], "request_id"):
+                        # It's an object with attributes (like MetadataModel)
+                        cached_response["metadata"].request_id = request_id
+                        cached_response["metadata"].timestamp = time.time()
+                        cached_response["metadata"].process_time = time.time() - start_time
+                        cached_response["metadata"].cached = True
+                    else:
+                        # Create new metadata
+                        logger.warning(f"Creating new metadata for cached response")
+                        cached_response["metadata"] = MetadataModel(
+                            request_id=request_id,
+                            timestamp=time.time(),
+                            version=request.app.state.config.get("version", "1.0.0"),
+                            process_time=time.time() - start_time,
+                            cached=True
+                        )
+                else:
+                    logger.warning(f"Cached response has no metadata field: {type(cached_response)}")
                 
                 # Return cached response
                 return cached_response
@@ -1192,9 +1067,6 @@ async def analyze_text(
 
 # ----- Summarization Endpoint -----
 
-
-# ----- Summarization Endpoint -----
-
 from typing import Optional
 
 class SummarizationRequest(BaseModel):
@@ -1305,215 +1177,4 @@ async def summarize_text(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Summarization error: {str(e)}"
-        )
-
-# ----- Verification Endpoints -----
-
-@router.post(
-    "/verify",
-    response_model=VerificationResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Verify translation",
-    description="Verifies the quality of a translation."
-)
-async def verify_translation(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    source_text: str = Body(..., embed=True),
-    translated_text: str = Body(..., embed=True),
-    source_language: str = Body(..., embed=True),
-    target_language: str = Body(..., embed=True),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Verify the quality of a translation.
-    
-    This endpoint evaluates translations for accuracy, completeness,
-    and other quality metrics, providing detailed feedback.
-    """
-    start_time = time.time()
-    request_id = str(uuid.uuid4())
-    
-    try:
-        # Get application components from state
-        processor = request.app.state.processor
-        if processor is None:
-            raise HTTPException(status_code=503, detail="Processor not initialized")
-        metrics = request.app.state.metrics
-        audit_logger = request.app.state.audit_logger
-        
-        # Log request to audit log
-        await audit_logger.log_api_request(
-            endpoint="/pipeline/verify",
-            method="POST",
-            user_id=current_user["id"],
-            source_ip=request.client.host,
-            request_id=request_id,
-            request_params={
-                "source_text_length": len(source_text),
-                "translated_text_length": len(translated_text),
-                "source_language": source_language,
-                "target_language": target_language
-            }
-        )
-        
-        # Process verification
-        verification_result = await processor.verify_translation(
-            source_text=source_text,
-            translated_text=translated_text,
-            source_language=source_language,
-            target_language=target_language,
-            user_id=current_user["id"],
-            request_id=request_id
-        )
-        
-        # Calculate process time
-        process_time = time.time() - start_time
-        
-        # Record metrics in background
-        background_tasks.add_task(
-            metrics.record_pipeline_execution,
-            pipeline_id="verification",
-            operation="verify",
-            duration=process_time,
-            input_size=len(source_text) + len(translated_text),
-            output_size=0,
-            success=True,
-            metadata={
-                "source_language": source_language,
-                "target_language": target_language,
-                "verified": verification_result["verified"],
-                "score": verification_result["score"]
-            }
-        )
-        
-        # Create result model
-        result = VerificationResult(
-            verified=verification_result["verified"],
-            score=verification_result["score"],
-            confidence=verification_result["confidence"],
-            issues=verification_result.get("issues", []),
-            source_text=source_text,
-            translated_text=translated_text,
-            source_language=source_language,
-            target_language=target_language,
-            metrics=verification_result.get("metrics", {}),
-            process_time=process_time
-        )
-        
-        # Create response
-        response = BaseResponse(
-            status=StatusEnum.SUCCESS,
-            message="Translation verification completed successfully",
-            data=result,
-            metadata=MetadataModel(
-                request_id=request_id,
-                timestamp=time.time(),
-                version=request.app.state.config.get("version", "1.0.0"),
-                process_time=process_time
-            ),
-            errors=None,
-            pagination=None
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Translation verification error: {str(e)}", exc_info=True)
-        
-        # Record error metrics in background
-        background_tasks.add_task(
-            metrics.record_pipeline_execution,
-            pipeline_id="verification",
-            operation="verify",
-            duration=time.time() - start_time,
-            input_size=len(source_text) + len(translated_text),
-            output_size=0,
-            success=False,
-            metadata={
-                "error": str(e),
-                "source_language": source_language,
-                "target_language": target_language
-            }
-        )
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Translation verification error: {str(e)}"
-        )
-
-# ----- Task Status Endpoints -----
-
-@router.get(
-    "/tasks/{task_id}",
-    response_model=QueueStatusResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Get task status",
-    description="Retrieves the status of an asynchronous processing task."
-)
-async def get_task_status(
-    request: Request,
-    task_id: str = Path(..., description="Task identifier"),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Get status of an asynchronous processing task.
-    
-    This endpoint retrieves the current status of any asynchronous
-    pipeline task, including progress information and results.
-    """
-    start_time = time.time()
-    
-    try:
-        # Get application components from state
-        processor = request.app.state.processor
-        if processor is None:
-            raise HTTPException(status_code=503, detail="Processor not initialized")
-        
-        # Get task status
-        task_status = await processor.get_task_status(task_id)
-        
-        if not task_status:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Task not found: {task_id}"
-            )
-            
-        # Prepare result
-        result = QueueStatus(
-            queue_id=task_status.get("queue_id", "default"),
-            task_id=task_id,
-            status=task_status.get("status", "unknown"),
-            position=task_status.get("position"),
-            estimated_start_time=task_status.get("estimated_start_time"),
-            estimated_completion_time=task_status.get("estimated_completion_time"),
-            progress=task_status.get("progress", 0.0),
-            result_url=task_status.get("result_url")
-        )
-        
-        # Create response
-        response = BaseResponse(
-            status=StatusEnum.SUCCESS,
-            message=f"Task status: {result.status}",
-            data=result,
-            metadata=MetadataModel(
-                request_id=str(uuid.uuid4()),
-                timestamp=time.time(),
-                version=request.app.state.config.get("version", "1.0.0"),
-                process_time=time.time() - start_time
-            ),
-            errors=None,
-            pagination=None
-        )
-        
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving task status: {str(e)}", exc_info=True)
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving task status: {str(e)}"
         )

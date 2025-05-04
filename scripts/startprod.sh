@@ -174,6 +174,35 @@ if [ -n "$SSL_CERT" ] && [ -n "$SSL_KEY" ]; then
   fi
 fi
 
+# Configure API optimizations for production
+echo -e "${BLUE}Configuring API optimizations for production...${NC}"
+
+# Set environment variables if not already in .env
+if [ -f ".env" ]; then
+  echo -e "${CYAN}📝 Loading configuration from .env file...${NC}"
+  # shellcheck disable=SC1090
+  source .env
+fi
+
+# Set optimization environment variables
+export ENVIRONMENT="production"
+export ROUTE_CACHE_SIZE=${ROUTE_CACHE_SIZE:-5000}
+export TRANSLATION_CACHE_SIZE=${TRANSLATION_CACHE_SIZE:-10000}
+export MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-20}
+export ENABLE_STREAMING=${ENABLE_STREAMING:-true}
+
+# Create necessary cache directories
+mkdir -p cache/models cache/api
+
+# Display configuration
+echo -e "${CYAN}┌─────────────── API CONFIGURATION ───────────────┐${NC}"
+echo -e "${CYAN}│${NC} Environment:          ${GREEN}production${NC}"
+echo -e "${CYAN}│${NC} Route Cache Size:     ${GREEN}${ROUTE_CACHE_SIZE}${NC}"
+echo -e "${CYAN}│${NC} Translation Cache:    ${GREEN}${TRANSLATION_CACHE_SIZE}${NC}"
+echo -e "${CYAN}│${NC} Max Batch Size:       ${GREEN}${MAX_BATCH_SIZE}${NC}"
+echo -e "${CYAN}│${NC} Streaming Enabled:    ${GREEN}${ENABLE_STREAMING}${NC}"
+echo -e "${CYAN}└─────────────────────────────────────────────────┘${NC}"
+
 # Start the production server with Gunicorn and Uvicorn workers
 echo -e "${GREEN}🚀 Launching CasaLingua production server with Gunicorn...${NC}"
 echo -e "${BLUE}Host: ${YELLOW}$HOST${BLUE}, Port: ${YELLOW}$PORT${BLUE}, Workers: ${YELLOW}$WORKERS${NC}"
@@ -187,6 +216,7 @@ gunicorn app.main:app \
   --workers $WORKERS \
   --worker-class uvicorn.workers.UvicornWorker \
   --log-level $LOG_LEVEL \
+  --timeout 120 \
   $SSL_OPTIONS
 
 # This part will only execute if gunicorn is stopped
