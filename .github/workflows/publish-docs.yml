@@ -21,6 +21,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.check_pages.outputs.pages_enabled }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -396,35 +398,6 @@ Anonymizes personally identifiable information in text.
 \`\`\`
 EOF
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Build with MkDocs
-        run: mkdocs build
-
-      - name: Upload docs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: documentation-site
-          path: ./site
-          
-      # This step will only succeed if GitHub Pages is enabled
-      # If it fails, the workflow will continue and just build the docs as an artifact
-      - name: Upload pages artifact (if GitHub Pages enabled)
-        uses: actions/upload-pages-artifact@v3
-        continue-on-error: true
-        with:
-          path: ./site
-
-  # This job will only run if GitHub Pages is properly enabled for the repository
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !failure() && !cancelled() }}
-    steps:
       - name: Check if GitHub Pages is enabled
         id: check_pages
         uses: actions/github-script@v7
@@ -438,14 +411,49 @@ EOF
                 repo: context.repo.repo
               });
               console.log('GitHub Pages is enabled for this repository');
+              core.setOutput('pages_enabled', 'true');
               return true;
             } catch (error) {
               console.log('GitHub Pages is not enabled for this repository');
+              core.setOutput('pages_enabled', 'false');
               return false;
             }
-      
+
+      # Only run these steps if GitHub Pages is enabled
+      - name: Setup Pages
+        if: steps.check_pages.outputs.pages_enabled == 'true'
+        uses: actions/configure-pages@v4
+        continue-on-error: true
+
+      # Always build the docs
+      - name: Build with MkDocs
+        run: mkdocs build
+
+      # Always upload as an artifact
+      - name: Upload docs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-site
+          path: ./site
+          
+      # Only try to upload to Pages if it's enabled
+      - name: Upload pages artifact
+        if: steps.check_pages.outputs.pages_enabled == 'true'
+        uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
+        with:
+          path: ./site
+
+  # Deploy job will only run if GitHub Pages is properly enabled
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.pages_enabled == 'true' && !failure() && !cancelled()
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        if: ${{ steps.check_pages.outputs.result == 'true' }}
         uses: actions/deploy-pages@v4
         continue-on-error: true
