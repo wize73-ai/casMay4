@@ -1,4 +1,3 @@
-I'd be happy to create a top-level README for the CasaLingua project in Exygy's style. Let me craft that for you.
 
 # CasaLingua
 
