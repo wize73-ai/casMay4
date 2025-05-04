@@ -59,9 +59,10 @@ class AnonymizationStrategy:
     REMOVE = "remove"     # Remove completely
     HASH = "hash"         # Replace with hash
     PARTIAL = "partial"   # Show partial information
+    PSEUDONYMIZE = "pseudonymize"  # Similar to REPLACE but with consistent data
     
     # All supported strategies
-    ALL_STRATEGIES = {MASK, REPLACE, REDACT, REMOVE, HASH, PARTIAL}
+    ALL_STRATEGIES = {MASK, REPLACE, REDACT, REMOVE, HASH, PARTIAL, PSEUDONYMIZE}
 
 class AnonymizationPipeline:
     """
