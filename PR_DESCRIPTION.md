@@ -1,5 +1,7 @@
 # Fix Model Loading Issues in CasaLingua Pipeline
 
+Repository: [wize73-ai/casMay4](https://github.com/wize73-ai/casMay4)
+
 ## Summary
 - Fixed critical model loading issues that prevented server startup
 - Created proper model registry configuration with correct model classes
