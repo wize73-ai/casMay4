@@ -78,6 +78,11 @@
   - Fixed timeout handling during testing
   - Added direct completion event setting in test process function
 
+- Fixed code issues preventing application from running
+  - Fixed syntax error in anonymizer.py that caused a crash on startup
+  - Uncommented tokenizer.py code that was completely commented out
+  - Updated veracity.py to use EnhancedModelManager instead of ModelManager
+
 ### Documentation
 - Added `OPTIMIZATIONS.md` detailing all optimizations
 - Updated API documentation in `app/api/README.md`
