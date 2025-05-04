@@ -28,12 +28,12 @@ jobs:
         python-version: ["3.8", "3.9", "3.10"]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
     
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
         
@@ -49,7 +49,7 @@ jobs:
         echo "MODEL_CACHE_DIR=$HOME/.cache/casalingua/models" >> $GITHUB_ENV
         
     - name: Cache model files
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cache/casalingua/models
         key: ${{ runner.os }}-model-cache-${{ hashFiles('**/scripts/download_models.py') }}
@@ -174,7 +174,7 @@ jobs:
         echo "- Consistent anonymization results" >> test-results.md
         
     - name: Upload Test Results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-results-${{ matrix.python-version }}
         path: test-results.md
