@@ -14,7 +14,11 @@ License: MIT
 import os
 from dotenv import load_dotenv
 load_dotenv()
+
+# Set development mode during development and testing
+os.environ["CASALINGUA_ENV"] = "development"
 ENVIRONMENT = os.getenv("CASALINGUA_ENV", "production").lower()
+print(f"🔧 Starting CasaLingua in {ENVIRONMENT} mode")
 import sys
 import time
 import logging
