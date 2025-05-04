@@ -20,7 +20,7 @@ import numpy as np
 
 from app.utils.config import load_config, get_config_value
 from app.utils.logging import get_logger
-from app.services.models.manager import ModelManager
+from app.services.models.manager import EnhancedModelManager as ModelManager
 
 
 JSONDict = Dict[str, Any]
