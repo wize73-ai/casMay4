@@ -42,6 +42,31 @@
 - `app/api/routes/pipeline.py`: Added parallel processing
 - Several pipeline components for improved performance
 
+### Updated Shell Scripts
+- `install.sh`: Completely revamped to support API optimizations
+  - Added virtual environment setup and activation
+  - Added configuration for optimization settings via .env file
+  - Added directory creation for cache and models
+
+- `scripts/startdev.sh`: Updated for development environment
+  - Added environment variable setting for optimization parameters
+  - Added loading of configuration from .env file
+  - Added display of current configuration
+
+- `scripts/startprod.sh`: Updated for production environment
+  - Added larger default cache sizes and batch sizes
+  - Added timeout parameter to Gunicorn for streaming responses
+
+- `scripts/casalingua.sh`: Improved for compatibility
+  - Added support for both .venv and venv directories
+  - Added configuration of optimizations via environment variables
+  - Added error code propagation
+
+- `scripts/test.sh`: Added optimization testing support
+  - Added --optimizations flag for testing API optimizations
+  - Added dependency checks for optimization requirements
+  - Extended test reporting to include optimization details
+
 ### Documentation
 - Added `OPTIMIZATIONS.md` detailing all optimizations
 - Updated API documentation in `app/api/README.md`

@@ -98,3 +98,18 @@ Key Features:
 - Documentation for testing
 
 **Status**: Closed ✅
+
+## Issue 8: Update Shell Scripts for API Optimizations
+**Title**: Update Shell Scripts for API Optimizations
+**Labels**: enhancement, devops
+**Body**:
+Update all shell scripts to support the new API optimizations and ensure proper virtual environment setup.
+
+Key Features:
+- Update install.sh to configure optimization settings
+- Update startdev.sh and startprod.sh for appropriate environments
+- Update casalingua.sh for compatibility with both venv and .venv
+- Update test.sh to support API optimization testing
+- Add proper environment variable handling for all optimization parameters
+
+**Status**: Closed ✅

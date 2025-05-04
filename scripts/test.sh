@@ -2,7 +2,7 @@
 
 # CasaLingua Test Runner Script
 # Author: Exygy Development Team
-# Version: 1.0.0
+# Version: 1.1.0
 # License: MIT
 
 set -e  # Exit on error
@@ -33,6 +33,7 @@ MARK=""
 COLLECT_ONLY=false
 FAIL_FAST=false
 HTML_REPORT=true
+TEST_OPTIMIZATIONS=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -89,6 +90,11 @@ while [[ $# -gt 0 ]]; do
       TEST_PATH="tests/models"
       shift
       ;;
+    --optimizations)
+      TEST_OPTIMIZATIONS=true
+      TEST_PATH="app/tests/"
+      shift
+      ;;
     *)
       echo -e "${RED}Unknown argument: $1${NC}"
       echo -e "${YELLOW}Available options:${NC}"
@@ -105,6 +111,7 @@ while [[ $# -gt 0 ]]; do
       echo -e "  --integration        Run only integration tests"
       echo -e "  --api                Run only API tests"
       echo -e "  --models             Run only model tests"
+      echo -e "  --optimizations      Run API optimization tests (route cache, batch optimizer)"
       exit 1
       ;;
   esac
@@ -113,7 +120,14 @@ done
 # Activate virtual environment if not already activated
 if [ -z "$VIRTUAL_ENV" ]; then
   echo -e "${BLUE}Activating virtual environment...${NC}"
-  if [ -d "venv" ]; then
+  
+  # First try .venv (from new install script)
+  if [ -d ".venv" ]; then
+    echo -e "${GREEN}Found virtual environment at .venv${NC}"
+    source .venv/bin/activate
+  # Then try venv (from older installations)
+  elif [ -d "venv" ]; then
+    echo -e "${GREEN}Found virtual environment at venv${NC}"
     source venv/bin/activate
   else
     echo -e "${YELLOW}Virtual environment not found. Continuing without it...${NC}"
@@ -127,6 +141,20 @@ echo -e "${BLUE}Setting environment to: ${YELLOW}$ENV${NC}"
 # Make sure test dependencies are installed
 echo -e "${BLUE}Checking test dependencies...${NC}"
 pip list | grep -q pytest || pip install pytest pytest-cov pytest-asyncio pytest-xdist
+
+# Install optimization test dependencies if needed
+if [ "$TEST_OPTIMIZATIONS" = true ]; then
+  echo -e "${BLUE}Checking optimization test dependencies...${NC}"
+  pip list | grep -q nest-asyncio || pip install nest-asyncio
+  pip list | grep -q aiohttp || pip install aiohttp
+  pip list | grep -q httpx || pip install httpx
+  
+  # Check for route cache and batch optimizer packages
+  echo -e "${BLUE}Verifying optimization packages...${NC}"
+  # If any packages are missing, inform the user but continue (they may be included in the app)
+  pip list | grep -q "cachetools" || echo -e "${YELLOW}Warning: cachetools not installed (may be required for route cache)${NC}"
+  pip list | grep -q "aiomultiprocess" || echo -e "${YELLOW}Warning: aiomultiprocess not installed (may be required for parallel processing)${NC}"
+fi
 
 # Prepare pytest command
 PYTEST_CMD="python -m pytest"
@@ -179,8 +207,25 @@ fi
 # Run the tests
 echo -e "${BLUE}Running tests...${NC}"
 echo -e "${YELLOW}=======================================${NC}"
-eval $PYTEST_CMD
-TEST_RESULT=$?
+
+if [ "$TEST_OPTIMIZATIONS" = true ]; then
+  echo -e "${BLUE}Running API optimization tests...${NC}"
+  
+  # Set environment variables for optimizations
+  export ROUTE_CACHE_SIZE=500
+  export TRANSLATION_CACHE_SIZE=1000
+  export MAX_BATCH_SIZE=10
+  export ENABLE_STREAMING=true
+  
+  # Run the custom test runner
+  python -m app.tests.run_tests
+  TEST_RESULT=$?
+else
+  # Run standard tests
+  eval $PYTEST_CMD
+  TEST_RESULT=$?
+fi
+
 echo -e "${YELLOW}=======================================${NC}"
 
 # Check test result
@@ -226,6 +271,18 @@ generate_test_report() {
   echo "Test Path: $TEST_PATH" >> $REPORT_FILE
   echo "Coverage: $COVERAGE" >> $REPORT_FILE
   echo "Environment: $ENV" >> $REPORT_FILE
+  
+  # Include optimization test information if applicable
+  if [ "$TEST_OPTIMIZATIONS" = true ]; then
+    echo "API Optimizations: Yes" >> $REPORT_FILE
+    echo "  - Route Cache Size: $ROUTE_CACHE_SIZE" >> $REPORT_FILE
+    echo "  - Translation Cache Size: $TRANSLATION_CACHE_SIZE" >> $REPORT_FILE
+    echo "  - Max Batch Size: $MAX_BATCH_SIZE" >> $REPORT_FILE
+    echo "  - Streaming Enabled: $ENABLE_STREAMING" >> $REPORT_FILE
+  else
+    echo "API Optimizations: No" >> $REPORT_FILE
+  fi
+  
   echo "===================================" >> $REPORT_FILE
   echo "" >> $REPORT_FILE
   
@@ -240,6 +297,16 @@ generate_test_report() {
     echo "All tests passed successfully." >> $REPORT_FILE
   else
     echo "Tests failed with exit code $TEST_RESULT." >> $REPORT_FILE
+  fi
+  
+  # Add optimization-specific notes if applicable
+  if [ "$TEST_OPTIMIZATIONS" = true ]; then
+    echo "" >> $REPORT_FILE
+    echo "API Optimization Notes:" >> $REPORT_FILE
+    echo "- Route Cache: Thread-safe in-memory caching system for API responses" >> $REPORT_FILE
+    echo "- Batch Optimizer: Automatic grouping of similar small requests" >> $REPORT_FILE
+    echo "- Streaming: Chunk-based processing for large documents" >> $REPORT_FILE
+    echo "- See OPTIMIZATIONS.md for detailed information" >> $REPORT_FILE
   fi
   
   echo -e "${GREEN}Test report generated: ${YELLOW}$REPORT_FILE${NC}"
