@@ -1,4 +1,3 @@
-# app/core/pipeline/anonymizer.py
 """
 Anonymization Pipeline for CasaLingua
 
@@ -13,18 +12,14 @@ License: MIT
 
 import re
 import uuid
-import logging
-import time
 import hashlib
-import asyncio
+import time
+import logging
 from typing import Dict, Any, List, Optional, Tuple, Union, Set, Pattern
 
-from app.core.pipeline.tokenizer import TokenizerPipeline
-
-from app.services.models.manager import ModelManager
 from app.utils.logging import get_logger
 
-logger = get_logger("core.anonymizer")
+logger = get_logger("casalingua.core.anonymizer")
 
 class EntityType:
     """Entity types for PII detection."""
@@ -82,28 +77,34 @@ class AnonymizationPipeline:
     - Consistent entity replacement
     """
     
-    def __init__(self, model_manager: ModelManager, config: Dict[str, Any] = None, tokenizer: Optional[TokenizerPipeline] = None, registry_config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, 
+        model_manager, 
+        config: Dict[str, Any] = None, 
+        registry_config: Optional[Dict[str, Any]] = None
+    ):
         """
         Initialize the anonymization pipeline.
         
         Args:
             model_manager: Model manager for accessing anonymization models
             config: Configuration dictionary
+            registry_config: Registry configuration for models
         """
         self.model_manager = model_manager
         self.config = config or {}
-        self.initialized = False
-        self.tokenizer = tokenizer
         self.registry_config = registry_config or {}
-        if not self.tokenizer:
-            model_info = self.registry_config["anonymizer"]
-            model_name = model_info["tokenizer_name"]
-            self.tokenizer = TokenizerPipeline(model_name=model_name, task_type="anonymization")
-        self.prepare_input = self.tokenizer.prepare_input
+        self.initialized = False
+        
+        # Model type for anonymization
+        self.model_type = "anonymizer"
+        self.ner_model_type = "ner_detection"
         
         # Set default anonymization strategy
-        self.default_strategy = self.config.get("default_anonymization_strategy", 
-                                              AnonymizationStrategy.MASK)
+        self.default_strategy = self.config.get(
+            "default_anonymization_strategy", 
+            AnonymizationStrategy.MASK
+        )
         
         # Entity replacement consistency map
         self.entity_replacements = {}
@@ -116,9 +117,6 @@ class AnonymizationPipeline:
         
         # Language-specific patterns will be loaded on demand
         self.language_patterns = {}
-        
-        # Initialize anonymization model reference
-        self.anonymization_models = {}
         
         logger.info("Anonymization pipeline created (not yet initialized)")
     
@@ -133,6 +131,24 @@ class AnonymizationPipeline:
             return
         
         logger.info("Initializing anonymization pipeline")
+        
+        # Load anonymization model
+        try:
+            logger.info(f"Loading anonymization model ({self.model_type})")
+            await self.model_manager.load_model(self.model_type)
+            logger.info("Anonymization model loaded successfully")
+        except Exception as e:
+            logger.warning(f"Error loading anonymization model: {str(e)}")
+            logger.warning("Will use pattern-based anonymization")
+        
+        # Load NER model
+        try:
+            logger.info(f"Loading NER model ({self.ner_model_type})")
+            await self.model_manager.load_model(self.ner_model_type)
+            logger.info("NER model loaded successfully")
+        except Exception as e:
+            logger.warning(f"Error loading NER model: {str(e)}")
+            logger.warning("Entity recognition capabilities will be limited")
         
         # Load domain-specific patterns if configured
         domain_patterns_path = self.config.get("domain_patterns_path")
@@ -168,18 +184,11 @@ class AnonymizationPipeline:
             Tuple of (anonymized_text, detected_entities)
         """
         if not self.initialized:
-            raise RuntimeError("Anonymization pipeline not initialized")
+            await self.initialize()
         
         # Handle empty text
         if not text or len(text.strip()) == 0:
             return text, []
-
-        if self.prepare_input:
-            prepared = self.prepare_input(text, task="anonymization", language=language)
-            if isinstance(prepared, dict):
-                if options is None:
-                    options = {}
-                options.update(prepared)
 
         options = options or {}
         start_time = time.time()
@@ -268,51 +277,61 @@ class AnonymizationPipeline:
         Returns:
             List of detected entities
         """
-        # Get anonymization model
-        model_name = options.get("model_name")
-        anonymization_model = await self._get_anonymization_model(language, model_name)
-        
-        entities = []
-        
-        # 1. Use NER model if available
+        # Step 1: Use NER model for entity detection
         model_entities = []
-        if anonymization_model:
+        model_id = options.get("model_name", self.ner_model_type)
+        
+        try:
+            # Prepare input for NER model
             input_data = {
                 "text": text,
-                "language": language
+                "source_language": language,
+                "parameters": {
+                    "domain": domain
+                }
             }
             
-            try:
-                result = await self.model_manager.run_model(
-                    anonymization_model,
-                    "detect_entities",
-                    input_data
-                )
+            # Run NER model
+            result = await self.model_manager.run_model(
+                model_id,
+                "process",
+                input_data
+            )
+            
+            # Extract entities from result
+            if isinstance(result, dict) and "result" in result:
+                # Handle different result formats
+                if isinstance(result["result"], list):
+                    model_entities = result["result"]
+                elif isinstance(result["result"], dict) and "entities" in result["result"]:
+                    model_entities = result["result"]["entities"]
                 
-                model_entities = result.get("entities", [])
                 logger.debug(f"Detected {len(model_entities)} entities using NER model")
-                entities.extend(model_entities)
-            except Exception as e:
-                logger.warning(f"Model-based entity detection failed: {str(e)}")
+            
+        except Exception as e:
+            logger.warning(f"Model-based entity detection failed: {str(e)}")
+            logger.debug("Falling back to pattern-based detection")
         
-        # 2. Use regex patterns
+        # Step 2: Use regex patterns
         regex_entities = self._detect_entities_with_regex(text, language)
         logger.debug(f"Detected {len(regex_entities)} entities using regex patterns")
         
-        # 3. Use domain-specific patterns if applicable
+        # Step 3: Use domain-specific patterns if applicable
         domain_entities = []
         if domain and domain in self.domain_patterns:
             domain_entities = self._detect_domain_entities(text, domain)
             logger.debug(f"Detected {len(domain_entities)} domain-specific entities")
         
-        # 4. Combine all entities and handle overlaps
+        # Step 4: Combine all entities and handle overlaps
+        combined_entities = model_entities.copy()
+        
         for entity in regex_entities + domain_entities:
             # Check for overlap with model entities
             if not self._has_overlap(entity, model_entities):
-                entities.append(entity)
+                combined_entities.append(entity)
         
-        logger.debug(f"Combined {len(entities)} unique entities")
-        return entities
+        logger.debug(f"Combined {len(combined_entities)} unique entities")
+        return combined_entities
     
     def _detect_entities_with_regex(self, 
                                   text: str, 
@@ -618,6 +637,7 @@ class AnonymizationPipeline:
             # Generate fake IP
             return f"192.0.2.{uuid.uuid4().int % 256}"
 
+        # Domain-specific entities
         elif entity_type == EntityType.MEDICAL:
             fake_terms = ["Condition X", "Procedure Y", "Medication Z"]
             return fake_terms[uuid.uuid4().int % len(fake_terms)]
@@ -627,7 +647,6 @@ class AnonymizationPipeline:
         elif entity_type == EntityType.LEGAL:
             fake_terms = ["Case #XYZ", "Legal Notice", "Statute 42"]
             return fake_terms[uuid.uuid4().int % len(fake_terms)]
-
         else:
             # Default replacement
             return f"[{entity_type}-{uuid.uuid4().hex[:6]}]"
@@ -694,57 +713,6 @@ class AnonymizationPipeline:
                 return text
             visible_chars = max(1, min(3, len(text) // 3))
             return text[:visible_chars] + "*" * (len(text) - visible_chars)
-    
-    async def _get_anonymization_model(self, 
-                                     language: str,
-                                     model_name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get the appropriate anonymization model.
-        
-        Args:
-            language: Language code
-            model_name: Optional specific model name
-            
-        Returns:
-            Anonymization model
-        """
-        # If specific model requested, use it
-        if model_name:
-            # Check if already loaded
-            if model_name in self.anonymization_models:
-                return self.anonymization_models[model_name]
-            
-            # Try to load the model
-            model = await self.model_manager.get_model(model_name)
-            if model:
-                self.anonymization_models[model_name] = model
-                return model
-                
-            logger.warning(f"Requested model {model_name} not available, using fallback")
-        
-        # Check if language-specific model is already loaded
-        model_key = f"anonymization_{language}"
-        if model_key in self.anonymization_models:
-            return self.anonymization_models[model_key]
-        
-        # Try to get language specific model
-        model = await self.model_manager.get_model(model_key)
-        if model:
-            self.anonymization_models[model_key] = model
-            return model
-        
-        # Fall back to general anonymization model
-        if "anonymization" in self.anonymization_models:
-            return self.anonymization_models["anonymization"]
-        
-        model = await self.model_manager.get_model("anonymization")
-        if model:
-            self.anonymization_models["anonymization"] = model
-            return model
-        
-        # No model available
-        logger.warning(f"No anonymization model available for {language}")
-        return None
     
     def _init_patterns(self) -> None:
         """Initialize regex pattern libraries."""
@@ -818,26 +786,6 @@ class AnonymizationPipeline:
             patterns[EntityType.ADDRESS] = re.compile(r'\b\d+\s+[A-Za-z0-9\s,]+(Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Place|Pl|Court|Ct|Way|Terrace|Ter)[\s,]+[A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\b', re.IGNORECASE)
             
             # Dates (multiple formats)
-            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}(?:st|nd|rd|th)?,? \d{2,4})\b', re.IGNORECASE)
-            
-        elif language == "es":
-            # Spanish phone numbers
-            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+34\s?)?(?:6\d{2}|7[1-9]\d)[\s.-]?\d{2}[\s.-]?\d{2}[\s.-]?\d{2}\b')
-            
-            # Spanish ID (DNI/NIE)
-            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[0-9XYZ][0-9]{7}[A-Z]\b')
-            
-            # Spanish dates
-            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
-            
-        elif language == "fr":
-            # French phone numbers
-            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}\b')
-            
-            # French social security number
-            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b')
-            
-            # French dates
             patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Septembre|Octobre|Novembre|Décembre) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
             
         elif language == "de":
@@ -943,4 +891,24 @@ class AnonymizationPipeline:
     def _get_random_street(self) -> str:
         """Generate a random street name."""
         streets = ["Main", "Oak", "Maple", "Cedar", "Pine", "Elm", "Washington", "Park"]
-        return streets[uuid.uuid4().int % len(streets)]
+        return streets[uuid.uuid4().int % len(streets)] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}(?:st|nd|rd|th)?,? \d{2,4})\b', re.IGNORECASE)
+            
+        elif language == "es":
+            # Spanish phone numbers
+            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+34\s?)?(?:6\d{2}|7[1-9]\d)[\s.-]?\d{2}[\s.-]?\d{2}[\s.-]?\d{2}\b')
+            
+            # Spanish ID (DNI/NIE)
+            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[0-9XYZ][0-9]{7}[A-Z]\b')
+            
+            # Spanish dates
+            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
+            
+        elif language == "fr":
+            # French phone numbers
+            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}\b')
+            
+            # French social security number
+            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b')
+            
+            # French dates
+            patterns[EntityType.DATE]

@@ -51,7 +51,8 @@ async def translate_text(
     background_tasks: BackgroundTasks,
     translation_request: TranslationRequest = Body(...),
     verification: bool = Query(False, description="Whether to verify translation quality"),
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    use_cache: bool = Query(True, description="Whether to use request-level caching")
 ):
     """
     Translate text from one language to another.
@@ -69,6 +70,79 @@ async def translate_text(
             raise HTTPException(status_code=503, detail="Processor not initialized")
         metrics = request.app.state.metrics
         audit_logger = request.app.state.audit_logger
+        
+        # Check request cache first if enabled
+        cached_response = None
+        if use_cache and hasattr(request.app.state, "route_cache"):
+            from app.services.storage.route_cache import RouteCacheManager, RouteCache
+            
+            # Get translation cache instance
+            translation_cache = await RouteCacheManager.get_cache(
+                name="translation",
+                max_size=1000,
+                ttl_seconds=3600,  # 1 hour by default
+                bloom_compatible=True
+            )
+            
+            # Generate cache key
+            cache_params = {
+                "text": translation_request.text,
+                "source_language": translation_request.source_language,
+                "target_language": translation_request.target_language,
+                "model_id": getattr(translation_request, "model_id", None),
+                "preserve_formatting": translation_request.preserve_formatting,
+                "formality": translation_request.formality,
+                "verify": verification or translation_request.verify
+            }
+            cache_key = RouteCache.bloom_compatible_key("/pipeline/translate", cache_params)
+            
+            # Try to get from cache
+            cached_response = await translation_cache.get(cache_key)
+            
+            if cached_response:
+                logger.info(f"Cache hit for translation request {request_id}")
+                
+                # Record cache hit metrics in background
+                background_tasks.add_task(
+                    metrics.record_pipeline_execution,
+                    pipeline_id="translation",
+                    operation="translate_cached",
+                    duration=time.time() - start_time,
+                    input_size=len(translation_request.text),
+                    output_size=len(cached_response["data"].translated_text),
+                    success=True,
+                    metadata={
+                        "source_language": translation_request.source_language,
+                        "target_language": translation_request.target_language,
+                        "cache_hit": True
+                    }
+                )
+                
+                # Log cache hit to audit log
+                background_tasks.add_task(
+                    audit_logger.log_api_request,
+                    endpoint="/pipeline/translate",
+                    method="POST",
+                    user_id=current_user["id"],
+                    source_ip=request.client.host,
+                    request_id=request_id,
+                    request_params={
+                        "source_language": translation_request.source_language,
+                        "target_language": translation_request.target_language,
+                        "text_length": len(translation_request.text),
+                        "cached": True
+                    },
+                    status_code=200
+                )
+                
+                # Update cached response metadata
+                cached_response["metadata"].request_id = request_id
+                cached_response["metadata"].timestamp = time.time()
+                cached_response["metadata"].process_time = time.time() - start_time
+                cached_response["metadata"].cached = True
+                
+                # Return cached response
+                return cached_response
         
         # Log request to audit log
         await audit_logger.log_api_request(
@@ -156,11 +230,17 @@ async def translate_text(
                 request_id=request_id,
                 timestamp=time.time(),
                 version=request.app.state.config.get("version", "1.0.0"),
-                process_time=process_time
+                process_time=process_time,
+                cached=False
             ),
             errors=None,
             pagination=None
         )
+        
+        # Store response in cache if caching is enabled
+        if use_cache and hasattr(request.app.state, "route_cache") and 'translation_cache' in locals() and 'cache_key' in locals():
+            await translation_cache.set(cache_key, response)
+            logger.debug(f"Stored translation in cache with key {cache_key[:8]}...")
         
         return response
         
@@ -221,7 +301,9 @@ async def batch_translate(
     request: Request,
     background_tasks: BackgroundTasks,
     batch_request: BatchTranslationRequest = Body(...),
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    use_cache: bool = Query(True, description="Whether to use request-level caching"),
+    smart_batching: bool = Query(True, description="Whether to use smart batching for optimization")
 ):
     """
     Translate multiple texts in a single request.
@@ -251,21 +333,126 @@ async def batch_translate(
                 "source_language": batch_request.source_language,
                 "target_language": batch_request.target_language,
                 "text_count": len(batch_request.texts),
-                "model_id": batch_request.model_id
+                "model_id": batch_request.model_id,
+                "smart_batching": smart_batching
             }
         )
         
-        # Process batch translation
-        batch_results = await processor.process_batch_translation(
-            texts=batch_request.texts,
-            source_language=batch_request.source_language,
-            target_language=batch_request.target_language,
-            model_id=batch_request.model_id,
-            glossary_id=batch_request.glossary_id,
-            preserve_formatting=batch_request.preserve_formatting,
-            user_id=current_user["id"],
-            request_id=request_id
-        )
+        # Check if cache is enabled
+        if use_cache and hasattr(request.app.state, "route_cache"):
+            from app.services.storage.route_cache import RouteCacheManager, RouteCache
+            translation_cache = await RouteCacheManager.get_cache(
+                name="translation_batch",
+                max_size=1000,
+                ttl_seconds=3600,  # 1 hour
+                bloom_compatible=True
+            )
+        
+        # Process batch translation with smart batching if enabled
+        if smart_batching:
+            from app.api.middleware.batch_optimizer import get_batch_processor
+            
+            # Create a batch processor for translation
+            async def process_batch_translation(texts_batch):
+                """Process a batch of translations."""
+                # Process the batch via processor
+                batch_results = await processor.process_batch_translation(
+                    texts=texts_batch,
+                    source_language=batch_request.source_language,
+                    target_language=batch_request.target_language,
+                    model_id=batch_request.model_id,
+                    glossary_id=batch_request.glossary_id,
+                    preserve_formatting=batch_request.preserve_formatting,
+                    user_id=current_user["id"],
+                    request_id=f"{request_id}_batch"
+                )
+                return batch_results
+            
+            # Get or create batch processor for this endpoint
+            batch_processor = get_batch_processor(
+                endpoint_path="/pipeline/translate",
+                processor_func=process_batch_translation,
+                max_batch_size=50,  # Maximum number of texts in a batch
+                max_batch_wait_ms=200,  # Maximum time to wait for batch to fill
+                min_batch_size=5  # Minimum number of texts to process as a batch
+            )
+            
+            # Prepare results list
+            batch_results = []
+            
+            # Try to use cache for individual texts if enabled
+            if use_cache and hasattr(request.app.state, "route_cache"):
+                # Process each text potentially from cache or through batch processor
+                cache_hits = 0
+                processed_count = 0
+                
+                # Create tasks for all texts
+                tasks = []
+                cache_keys = []
+                
+                for text in batch_request.texts:
+                    # Generate cache key for this specific translation
+                    cache_params = {
+                        "text": text,
+                        "source_language": batch_request.source_language,
+                        "target_language": batch_request.target_language,
+                        "model_id": batch_request.model_id,
+                        "preserve_formatting": batch_request.preserve_formatting
+                    }
+                    cache_key = RouteCache.bloom_compatible_key("/pipeline/translate", cache_params)
+                    cache_keys.append(cache_key)
+                    
+                    # Create task to get from cache or process
+                    async def process_item(item_text, item_key):
+                        # Try to get from cache first
+                        cached_result = await translation_cache.get(item_key)
+                        if cached_result:
+                            nonlocal cache_hits
+                            cache_hits += 1
+                            if "data" in cached_result:
+                                return cached_result["data"]
+                            return cached_result
+                        
+                        # Not in cache, process through batch processor
+                        nonlocal processed_count
+                        processed_count += 1
+                        return await batch_processor.process(item_text)
+                    
+                    tasks.append(process_item(text, cache_key))
+                
+                # Run all tasks concurrently
+                batch_results = await asyncio.gather(*tasks)
+                
+                # Store results in cache
+                for i, (text, result, cache_key) in enumerate(zip(batch_request.texts, batch_results, cache_keys)):
+                    if use_cache and isinstance(result, dict) and "translated_text" in result:
+                        await translation_cache.set(cache_key, result)
+                
+                logger.info(f"Batch translation: {cache_hits} cache hits, {processed_count} processed")
+            else:
+                # No caching, process entire batch normally
+                batch_results = await processor.process_batch_translation(
+                    texts=batch_request.texts,
+                    source_language=batch_request.source_language,
+                    target_language=batch_request.target_language,
+                    model_id=batch_request.model_id,
+                    glossary_id=batch_request.glossary_id,
+                    preserve_formatting=batch_request.preserve_formatting,
+                    user_id=current_user["id"],
+                    request_id=request_id
+                )
+        else:
+            # No smart batching, process entire batch as one
+            batch_results = await processor.process_batch_translation(
+                texts=batch_request.texts,
+                source_language=batch_request.source_language,
+                target_language=batch_request.target_language,
+                model_id=batch_request.model_id,
+                glossary_id=batch_request.glossary_id,
+                preserve_formatting=batch_request.preserve_formatting,
+                user_id=current_user["id"],
+                request_id=request_id
+            )
         
         # Calculate process time
         process_time = time.time() - start_time
@@ -273,23 +460,76 @@ async def batch_translate(
         # Prepare results
         results = []
         total_input_size = sum(len(text) for text in batch_request.texts)
-        total_output_size = sum(len(result["translated_text"]) for result in batch_results)
         
+        # Handle different result formats (from cache vs. batch processor)
+        translated_texts = []
         for i, result in enumerate(batch_results):
+            # Extract translated text based on result type
+            if isinstance(result, dict):
+                if "translated_text" in result:
+                    translated_text = result["translated_text"]
+                    source_lang = result.get("source_language", batch_request.source_language)
+                    confidence = result.get("confidence", 0.0)
+                    model_id = result.get("model_id", "default")
+                    process_time_item = result.get("process_time", 0.0)
+                    word_count = result.get("word_count", 0)
+                    detected_lang = result.get("detected_language")
+                    verified = result.get("verified", False)
+                    verification_score = result.get("verification_score")
+                elif hasattr(result, "translated_text"):
+                    # It's a TranslationResult model
+                    translated_text = result.translated_text
+                    source_lang = result.source_language
+                    confidence = result.confidence
+                    model_id = result.model_id
+                    process_time_item = result.process_time
+                    word_count = result.word_count
+                    detected_lang = result.detected_language
+                    verified = result.verified
+                    verification_score = result.verification_score
+                else:
+                    # Unexpected format, use defaults
+                    translated_text = str(result)
+                    source_lang = batch_request.source_language
+                    confidence = 0.0
+                    model_id = "default"
+                    process_time_item = 0.0
+                    word_count = 0
+                    detected_lang = None
+                    verified = False
+                    verification_score = None
+            else:
+                # Result is not a dict, convert to string
+                translated_text = str(result)
+                source_lang = batch_request.source_language
+                confidence = 0.0
+                model_id = "default"
+                process_time_item = 0.0
+                word_count = 0
+                detected_lang = None
+                verified = False
+                verification_score = None
+            
+            translated_texts.append(translated_text)
+            
+            # Create result model
             results.append(TranslationResult(
                 source_text=batch_request.texts[i],
-                translated_text=result["translated_text"],
-                source_language=result.get("detected_language", batch_request.source_language),
+                translated_text=translated_text,
+                source_language=source_lang,
                 target_language=batch_request.target_language,
-                confidence=result.get("confidence", 0.0),
-                model_id=result.get("model_id", "default"),
-                process_time=result.get("process_time", 0.0),
-                word_count=result.get("word_count", 0),
+                confidence=confidence,
+                model_id=model_id,
+                process_time=process_time_item,
+                word_count=word_count,
                 character_count=len(batch_request.texts[i]),
-                detected_language=result.get("detected_language") if batch_request.source_language == "auto" else None,
-                verified=False,
-                verification_score=None
+                detected_language=detected_lang if batch_request.source_language == "auto" else None,
+                verified=verified,
+                verification_score=verification_score
             ))
+        
+        # Calculate total output size
+        total_output_size = sum(len(text) for text in translated_texts)
             
         # Record metrics in background
         background_tasks.add_task(
@@ -303,7 +543,8 @@ async def batch_translate(
             metadata={
                 "source_language": batch_request.source_language,
                 "target_language": batch_request.target_language,
-                "batch_size": len(batch_request.texts)
+                "batch_size": len(batch_request.texts),
+                "smart_batching": smart_batching
             }
         )
         
@@ -316,7 +557,8 @@ async def batch_translate(
                 request_id=request_id,
                 timestamp=time.time(),
                 version=request.app.state.config.get("version", "1.0.0"),
-                process_time=process_time
+                process_time=process_time,
+                cached=False  # This refers to the whole batch, not individual items
             ),
             errors=None,
             pagination=None
@@ -340,7 +582,8 @@ async def batch_translate(
                 "error": str(e),
                 "source_language": batch_request.source_language,
                 "target_language": batch_request.target_language,
-                "batch_size": len(batch_request.texts)
+                "batch_size": len(batch_request.texts),
+                "smart_batching": smart_batching
             }
         )
         
@@ -742,7 +985,8 @@ async def analyze_text(
     request: Request,
     background_tasks: BackgroundTasks,
     analysis_request: TextAnalysisRequest = Body(...),
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    use_cache: bool = Query(True, description="Whether to use request-level caching")
 ):
     """
     Analyze text for various linguistic features.
@@ -761,6 +1005,58 @@ async def analyze_text(
         metrics = request.app.state.metrics
         audit_logger = request.app.state.audit_logger
         
+        # Check request cache first if enabled
+        cached_response = None
+        if use_cache and hasattr(request.app.state, "route_cache"):
+            from app.services.storage.route_cache import RouteCacheManager, RouteCache
+            
+            # Get analysis cache instance
+            analysis_cache = await RouteCacheManager.get_cache(
+                name="analysis",
+                max_size=500,
+                ttl_seconds=3600,  # 1 hour by default
+                bloom_compatible=True
+            )
+            
+            # Generate cache key
+            cache_params = {
+                "text": analysis_request.text,
+                "language": analysis_request.language,
+                "analyses": analysis_request.analyses,
+                "model_id": analysis_request.model_id
+            }
+            cache_key = RouteCache.bloom_compatible_key("/pipeline/analyze", cache_params)
+            
+            # Try to get from cache
+            cached_response = await analysis_cache.get(cache_key)
+            
+            if cached_response:
+                logger.info(f"Cache hit for analysis request {request_id}")
+                
+                # Record cache hit metrics in background
+                background_tasks.add_task(
+                    metrics.record_pipeline_execution,
+                    pipeline_id="text_analysis",
+                    operation="analyze_cached",
+                    duration=time.time() - start_time,
+                    input_size=len(analysis_request.text),
+                    output_size=0,
+                    success=True,
+                    metadata={
+                        "cache_hit": True,
+                        "analyses": analysis_request.analyses,
+                    }
+                )
+                
+                # Update cached response metadata
+                cached_response["metadata"].request_id = request_id
+                cached_response["metadata"].timestamp = time.time()
+                cached_response["metadata"].process_time = time.time() - start_time
+                cached_response["metadata"].cached = True
+                
+                # Return cached response
+                return cached_response
+        
         # Log request to audit log
         await audit_logger.log_api_request(
             endpoint="/pipeline/analyze",
@@ -776,10 +1072,38 @@ async def analyze_text(
             }
         )
         
-        # Process text analysis
+        # Set up parallel task for language detection if needed
+        preprocessing_tasks = {}
+        detected_language = None
+        
+        # Add language detection task if no language specified
+        if not analysis_request.language or analysis_request.language == "auto":
+            preprocessing_tasks["language_detection"] = processor.detect_language(
+                text=analysis_request.text[:1000],  # Use limited text for faster detection
+                detailed=False
+            )
+        
+        # Execute preprocessing tasks in parallel if any
+        if preprocessing_tasks:
+            # Run all tasks concurrently
+            preprocessing_results = {}
+            results = await asyncio.gather(*preprocessing_tasks.values(), return_exceptions=True)
+            preprocessing_results = dict(zip(preprocessing_tasks.keys(), results))
+            
+            # Process language detection result
+            if "language_detection" in preprocessing_results:
+                detection_result = preprocessing_results["language_detection"]
+                # Check for exceptions
+                if isinstance(detection_result, Exception):
+                    logger.warning(f"Language detection failed: {detection_result}")
+                else:
+                    detected_language = detection_result.get("detected_language", "en")
+                    logger.debug(f"Detected language in analyze endpoint: {detected_language}")
+        
+        # Process text analysis with detected language if needed
         analysis_result = await processor.analyze_text(
             text=analysis_request.text,
-            language=analysis_request.language,
+            language=detected_language or analysis_request.language,
             analyses=analysis_request.analyses,
             model_id=analysis_request.model_id,
             user_id=current_user["id"],
@@ -827,11 +1151,17 @@ async def analyze_text(
                 request_id=request_id,
                 timestamp=time.time(),
                 version=request.app.state.config.get("version", "1.0.0"),
-                process_time=process_time
+                process_time=process_time,
+                cached=False
             ),
             errors=None,
             pagination=None
         )
+        
+        # Store response in cache if caching is enabled
+        if use_cache and hasattr(request.app.state, "route_cache") and 'analysis_cache' in locals() and 'cache_key' in locals():
+            await analysis_cache.set(cache_key, response)
+            logger.debug(f"Stored analysis result in cache with key {cache_key[:8]}...")
         
         return response
         

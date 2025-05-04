@@ -20,20 +20,20 @@ from app.core.pipeline.detector import InputDetector
 from app.core.pipeline.translator import TranslationPipeline
 from app.core.pipeline.simplifier import SimplificationPipeline
 from app.core.pipeline.anonymizer import AnonymizationPipeline
-from app.core.pipeline.tokenizer import TokenizerPipeline
 from app.core.pipeline.summarizer import SummarizationPipeline
-from app.services.models.wrappers.summarization import GenerativeSummarizationModel
+from app.core.pipeline.tts import TTSPipeline
 from app.core.document.pdf import PDFProcessor
 from app.core.document.docx import DOCXProcessor
 from app.core.document.ocr import OCRProcessor
 from app.core.rag.expert import RAGExpert
-from app.services.models.manager import ModelManager
 from app.audit.logger import AuditLogger
 from app.audit.metrics import MetricsCollector
 from app.audit.veracity import VeracityAuditor
 from app.utils.logging import get_logger
 from app.api.schemas.translation import TranslationResult, TranslationRequest
-logger = get_logger("core.processor")
+from app.api.schemas.language import LanguageDetectionRequest
+
+logger = get_logger("casalingua.core.processor")
 
 class UnifiedProcessor:
     """
@@ -52,7 +52,7 @@ class UnifiedProcessor:
     """
     
     def __init__(self, 
-                model_manager: ModelManager,
+                model_manager,
                 audit_logger: AuditLogger,
                 metrics: MetricsCollector,
                 config: Dict[str, Any] = None,
@@ -65,25 +65,31 @@ class UnifiedProcessor:
             audit_logger: Audit logger for tracking operations
             metrics: Metrics collector for performance monitoring
             config: Configuration dictionary
+            registry_config: Registry configuration for models
         """
         self.model_manager = model_manager
         self.audit_logger = audit_logger
         self.metrics = metrics
         self.config = config or {}
-        # self.tokenizer = None  # No longer passed in; pipelines use dynamic registry-based tokenization
+        self.registry_config = registry_config or {}
         
-        # Store registry_config for later use
-        self.registry_config = registry_config
-
         # Initialize subcomponents
-        self.input_detector = InputDetector(config, registry_config=registry_config)
+        self.input_detector = InputDetector(self.model_manager, self.config, registry_config=self.registry_config)
+        
+        # Initialize pipeline components to None - will be created on demand
         self.translation_pipeline = None
         self.simplification_pipeline = None
         self.anonymization_pipeline = None
+        self.multipurpose_pipeline = None  # For summarization
+        self.tts_pipeline = None
+        
+        # Initialize document processors to None - will be created on demand
         self.pdf_processor = None
         self.docx_processor = None
         self.ocr_processor = None
         self.rag_expert = None
+        
+        # Initialize verification
         self.veracity_checker = VeracityAuditor()
         
         # Processing cache setup
@@ -92,6 +98,7 @@ class UnifiedProcessor:
         self.cache_ttl = self.config.get("cache_ttl_seconds", 3600)  # 1 hour
         self.cache = {}
         self.cache_timestamps = {}
+        self.cache_lock = asyncio.Lock()  # Concurrency lock for thread safety
         
         # Status tracking
         self.initialized = False
@@ -108,11 +115,78 @@ class UnifiedProcessor:
         
         logger.info("Unified processor created (not yet initialized)")
     
+    async def _initialize_translation_pipeline(self) -> None:
+        """Initialize the translation pipeline component."""
+        logger.info("Initializing translation pipeline")
+        self.translation_pipeline = TranslationPipeline(
+            self.model_manager, 
+            self.config, 
+            registry_config=self.registry_config
+        )
+        await self.translation_pipeline.initialize()
+        logger.info("Translation pipeline initialization complete")
+        
+    async def _initialize_simplification_pipeline(self) -> None:
+        """Initialize the simplification pipeline component."""
+        logger.info("Initializing simplification pipeline")
+        self.simplification_pipeline = SimplificationPipeline(
+            self.model_manager, 
+            self.config, 
+            registry_config=self.registry_config
+        )
+        await self.simplification_pipeline.initialize()
+        logger.info("Simplification pipeline initialization complete")
+        
+    async def _initialize_multipurpose_pipeline(self) -> None:
+        """Initialize the multipurpose (summarization) pipeline component."""
+        logger.info("Initializing multipurpose pipeline")
+        self.multipurpose_pipeline = SummarizationPipeline(
+            self.model_manager, 
+            self.config, 
+            registry_config=self.registry_config
+        )
+        await self.multipurpose_pipeline.initialize()
+        logger.info("Multipurpose pipeline initialization complete")
+        
+    async def _initialize_anonymization_pipeline(self) -> None:
+        """Initialize the anonymization pipeline component."""
+        logger.info("Initializing anonymization pipeline")
+        self.anonymization_pipeline = AnonymizationPipeline(
+            self.model_manager, 
+            self.config, 
+            registry_config=self.registry_config
+        )
+        await self.anonymization_pipeline.initialize()
+        logger.info("Anonymization pipeline initialization complete")
+        
+    async def _initialize_tts_pipeline(self) -> None:
+        """Initialize the TTS pipeline component."""
+        logger.info("Initializing TTS pipeline")
+        self.tts_pipeline = TTSPipeline(
+            self.model_manager,
+            self.config,
+            registry_config=self.registry_config
+        )
+        await self.tts_pipeline.initialize()
+        logger.info("TTS pipeline initialization complete")
+        
+    async def _initialize_rag_expert(self) -> None:
+        """Initialize the RAG expert component (if enabled)."""
+        logger.info("Initializing RAG expert")
+        self.rag_expert = RAGExpert(
+            self.model_manager, 
+            self.config, 
+            registry_config=self.registry_config
+        )
+        await self.rag_expert.initialize()
+        logger.info("RAG expert initialization complete")
+    
     async def initialize(self) -> None:
         """
-        Initialize all processing components.
+        Initialize all processing components concurrently.
         
-        This loads the necessary models and prepares all pipeline components.
+        This loads the necessary models and prepares all pipeline components
+        in parallel for faster startup.
         """
         if self.initialized:
             logger.warning("Processor already initialized")
@@ -121,36 +195,27 @@ class UnifiedProcessor:
         start_time = time.time()
         logger.info("Initializing unified processor")
         
-        # Initialize translation pipeline
-        logger.info("Initializing translation pipeline")
-        self.translation_pipeline = TranslationPipeline(self.model_manager, self.config, registry_config=self.registry_config)
-        await self.translation_pipeline.initialize()
+        # Create initialization tasks for pipeline components
+        init_tasks = [
+            self._initialize_translation_pipeline(),
+            self._initialize_simplification_pipeline(),
+            self._initialize_multipurpose_pipeline(),
+            self._initialize_anonymization_pipeline(),
+            self._initialize_tts_pipeline()
+        ]
         
-        # Initialize simplification pipeline
-        logger.info("Initializing simplification pipeline")
-        self.simplification_pipeline = SimplificationPipeline(self.model_manager, self.config, registry_config=self.registry_config)
-        await self.simplification_pipeline.initialize()
-
-        # Initialize multipurpose pipeline for summarization
-        self.multipurpose_pipeline = SummarizationPipeline(self.model_manager, self.config, registry_config=self.registry_config)
-        await self.multipurpose_pipeline.initialize()
+        # If RAG is enabled, add it to initialization tasks
+        if self.config.get("rag_enabled", True):
+            init_tasks.append(self._initialize_rag_expert())
         
-        # Initialize anonymization pipeline
-        logger.info("Initializing anonymization pipeline")
-        self.anonymization_pipeline = AnonymizationPipeline(self.model_manager, self.config, registry_config=self.registry_config)
-        await self.anonymization_pipeline.initialize()
+        # Run all initialization tasks concurrently
+        await asyncio.gather(*init_tasks)
         
-        # Initialize document processors
+        # Initialize document processors (these are synchronous)
         logger.info("Initializing document processors")
         self.pdf_processor = PDFProcessor(self.model_manager, self.config)
         self.docx_processor = DOCXProcessor(self.model_manager, self.config)
         self.ocr_processor = OCRProcessor(self.model_manager, self.config)
-        
-        # Initialize RAG expert (if enabled)
-        if self.config.get("rag_enabled", True):
-            logger.info("Initializing RAG expert")
-            self.rag_expert = RAGExpert(self.model_manager, self.config, registry_config=self.registry_config)
-            await self.rag_expert.initialize()
         
         # Start cache cleanup task
         if self.cache_enabled:
@@ -206,8 +271,8 @@ class UnifiedProcessor:
             cache_key = self._generate_cache_key(content, options)
             
         # Look up in cache
-        if self.cache_enabled and cache_key in self.cache:
-            cache_result = self._get_from_cache(cache_key)
+        if self.cache_enabled and cache_key:
+            cache_result = await self._get_from_cache(cache_key)
             if cache_result:
                 logger.info(f"Cache hit for request {request_id}")
                 # Add cache metadata
@@ -288,7 +353,7 @@ class UnifiedProcessor:
             
             # 7. Cache result if enabled
             if self.cache_enabled and cache_key:
-                self._add_to_cache(cache_key, result)
+                await self._add_to_cache(cache_key, result)
             
             logger.info(f"Processing complete for request {request_id} in {processing_time:.2f}s")
             return result
@@ -331,7 +396,7 @@ class UnifiedProcessor:
                            options: Dict[str, Any],
                            metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process text through the text pipeline.
+        Process text through the text pipeline with parallel operations.
         
         Args:
             text: Text to process
@@ -348,32 +413,71 @@ class UnifiedProcessor:
             "metadata": {}
         }
         
-        # 1. Detect language if not provided
+        # Set up concurrent tasks for independent operations
+        tasks = {}
         source_language = options.get("source_language")
-        if not source_language:
-            source_language, confidence = await self.translation_pipeline.detect_language(text)
-            result["detected_language"] = source_language
-            result["language_confidence"] = confidence
-            logger.debug(f"Detected language: {source_language} (confidence: {confidence:.2f})")
-        else:
-            # Store the provided language
-            result["source_language"] = source_language
         
-        # 2. Get RAG context if needed
-        context = None
+        # 1. Task for language detection (if needed)
+        if not source_language:
+            logger.debug("Starting language detection task")
+            detection_request = LanguageDetectionRequest(
+                text=text,
+                detailed=False
+            )
+            tasks["language_detection"] = self.translation_pipeline.detect_language(detection_request)
+        
+        # 2. Task for RAG context retrieval (if needed)
+        rag_source_lang = source_language or "en"  # Use default if not provided yet
         if options.get("use_rag", False) and self.rag_expert:
             target_grade_level = options.get("grade_level", 8)
-            logger.debug(f"Getting RAG context with target grade level {target_grade_level}")
-            context = await self.rag_expert.get_context(
+            logger.debug(f"Starting RAG context retrieval task with grade level {target_grade_level}")
+            tasks["rag_context"] = self.rag_expert.get_context(
                 text,
-                source_language,
+                rag_source_lang,
                 options.get("target_language", "en"),
                 {"grade_level": target_grade_level}
             )
-            if context:
-                result["rag_context_used"] = True
-                result["context_items"] = len(context)
-                logger.debug(f"Retrieved {len(context)} RAG context items")
+        
+        # Execute concurrent tasks if any
+        task_results = {}
+        if tasks:
+            # Run all tasks concurrently and handle exceptions
+            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            task_results = dict(zip(tasks.keys(), results))
+            
+            # Process language detection result
+            if "language_detection" in task_results:
+                detection_result = task_results["language_detection"]
+                
+                # Check for exceptions
+                if isinstance(detection_result, Exception):
+                    logger.warning(f"Language detection failed: {str(detection_result)}")
+                    source_language = "en"  # Fallback to English
+                else:
+                    source_language = detection_result.get("language", "en")
+                    confidence = detection_result.get("confidence", 0.0)
+                    
+                    result["detected_language"] = source_language
+                    result["language_confidence"] = confidence
+                    logger.debug(f"Detected language: {source_language} (confidence: {confidence:.2f})")
+            else:
+                # Store the provided language
+                result["source_language"] = source_language
+        
+        # Process RAG context result
+        context = None
+        if "rag_context" in task_results:
+            rag_result = task_results["rag_context"]
+            
+            # Check for exceptions
+            if isinstance(rag_result, Exception):
+                logger.warning(f"RAG context retrieval failed: {str(rag_result)}")
+            else:
+                context = rag_result
+                if context:
+                    result["rag_context_used"] = True
+                    result["context_items"] = len(context)
+                    logger.debug(f"Retrieved {len(context)} RAG context items")
         
         # 3. Apply anonymization if requested
         if options.get("anonymize", False):
@@ -410,14 +514,14 @@ class UnifiedProcessor:
                 context=context if context else None,
                 domain=options.get("domain"),
                 preserve_formatting=options.get("preserve_formatting", True),
-                model_name=options.get("model_name")
+                model_id=options.get("model_name")
             )
 
             translation_result = await self.translation_pipeline.translate(translation_request)
 
-            result["processed_text"] = translation_result["translated_text"]
+            result["processed_text"] = translation_result.translated_text
             result["translation_applied"] = True
-            result["translation_model"] = translation_result.get("model_used")
+            result["translation_model"] = translation_result.model_used
             result["target_language"] = target_language
         else:
             # If no translation, target language is the same as source
@@ -590,51 +694,55 @@ class UnifiedProcessor:
         """
         logger.debug("Processing audio content")
         
-        # Check if speech-to-text model is available
-        stt_model = await self.model_manager.get_model("speech_to_text")
-        
-        if not stt_model:
-            return {
-                "status": "error",
-                "error": "Speech-to-text capabilities not available",
-                "metadata": metadata
+        # Prepare input for speech-to-text model
+        input_data = {
+            "audio_content": audio_content,
+            "source_language": options.get("source_language"),
+            "parameters": {
+                "model_name": options.get("stt_model_name")
             }
+        }
         
         try:
-            # Transcribe audio
-            input_data = {
-                "audio": audio_content,
-                "language": options.get("source_language")
-            }
-            
-            transcription_result = await self.model_manager.run_model(
-                stt_model,
-                "transcribe",
-                input_data
+            # Run speech-to-text model through model manager
+            stt_result = await self.model_manager.run_model(
+                "speech_to_text",  # Model type
+                "process",         # Method
+                input_data         # Input data
             )
             
-            transcribed_text = transcription_result.get("text", "")
-            detected_language = transcription_result.get("language")
-            
-            # If language not provided but detected, update options
-            if not options.get("source_language") and detected_language:
-                options["source_language"] = detected_language
-            
-            # Process the transcribed text
-            if transcribed_text:
-                text_result = await self._process_text(transcribed_text, options, metadata)
+            # Extract transcript
+            if isinstance(stt_result, dict) and "result" in stt_result:
+                transcribed_text = stt_result["result"]
+                metadata["stt_model"] = stt_result.get("metadata", {}).get("model_used", "speech_to_text")
                 
-                # Add audio-specific metadata
-                text_result["audio_transcribed"] = True
-                text_result["original_audio_text"] = transcribed_text
-                text_result["detected_language"] = detected_language
-                text_result["audio_metadata"] = metadata
+                # Check for detected language in result
+                if "metadata" in stt_result and "detected_language" in stt_result["metadata"]:
+                    detected_language = stt_result["metadata"]["detected_language"]
+                    if not options.get("source_language") and detected_language:
+                        options["source_language"] = detected_language
                 
-                return text_result
+                # Process the transcribed text
+                if transcribed_text:
+                    text_result = await self._process_text(transcribed_text, options, metadata)
+                    
+                    # Add audio-specific metadata
+                    text_result["audio_transcribed"] = True
+                    text_result["original_audio_text"] = transcribed_text
+                    text_result["detected_language"] = options.get("source_language")
+                    text_result["audio_metadata"] = metadata
+                    
+                    return text_result
+                else:
+                    return {
+                        "status": "error",
+                        "error": "No speech detected in audio",
+                        "metadata": metadata
+                    }
             else:
                 return {
                     "status": "error",
-                    "error": "No speech detected in audio",
+                    "error": "Speech-to-text model returned invalid result",
                     "metadata": metadata
                 }
                 
@@ -698,52 +806,51 @@ class UnifiedProcessor:
         options = options or {}
         logger.debug(f"Generating speech for text in language: {language}")
         
-        # Check if TTS model is available
-        tts_model = await self.model_manager.get_model("text_to_speech")
-        
-        if not tts_model:
-            logger.warning("TTS model not available")
+        if not self.tts_pipeline:
+            logger.warning("TTS pipeline not available")
             return None
         
         try:
-            # Prepare input for TTS model
-            input_data = {
-                "text": text,
-                "language": language,
-                "voice": options.get("voice", "default"),
-                "speed": options.get("speed", 1.0),
-                "pitch": options.get("pitch", 1.0)
-            }
+            # Prepare parameters for TTS
+            voice = options.get("voice")
+            speed = options.get("speed", 1.0)
+            pitch = options.get("pitch", 1.0)
+            output_format = options.get("audio_format", "mp3")
             
-            # Run TTS model
-            tts_result = await self.model_manager.run_model(
-                tts_model,
-                "synthesize",
-                input_data
+            # Generate unique filename
+            request_id = options.get("request_id", str(uuid.uuid4()))
+            output_path = str(self.temp_dir / "audio" / f"tts_{request_id}.{output_format}")
+            
+            # Generate speech using TTS pipeline
+            tts_result = await self.tts_pipeline.synthesize(
+                text=text,
+                language=language,
+                voice=voice,
+                speed=speed,
+                pitch=pitch,
+                output_format=output_format,
+                output_path=output_path
             )
             
-            # Save audio to file if audio content is provided
-            if "audio_content" in tts_result:
-                # Generate unique filename
-                request_id = options.get("request_id", str(uuid.uuid4()))
-                audio_format = tts_result.get("format", "mp3")
-                filename = f"tts_{request_id}.{audio_format}"
+            # If successful, create result
+            if "error" not in tts_result:
+                # Get audio file path
+                audio_file = tts_result.get("audio_file")
                 
-                filepath = self.temp_dir / "audio" / filename
-                filepath.parent.mkdir(parents=True, exist_ok=True)
+                # Create API URL for audio
+                filename = os.path.basename(audio_file)
+                audio_url = f"/api/audio/{filename}"
                 
-                # Write audio content to file
-                with open(filepath, "wb") as f:
-                    f.write(tts_result["audio_content"])
-                
-                # Update result with file path
-                tts_result["audio_file"] = str(filepath)
-                tts_result["audio_url"] = f"/api/audio/{filename}"
-                
-                # Remove binary content from result to avoid large responses
-                del tts_result["audio_content"]
-            
-            return tts_result
+                return {
+                    "audio_file": audio_file,
+                    "audio_url": audio_url,
+                    "format": output_format,
+                    "duration": tts_result.get("duration", 0),
+                    "model_used": tts_result.get("model_used", "tts")
+                }
+            else:
+                logger.error(f"TTS error: {tts_result.get('error')}")
+                return None
             
         except Exception as e:
             logger.error(f"Error generating speech: {str(e)}", exc_info=True)
@@ -785,9 +892,9 @@ class UnifiedProcessor:
         # Combine for final key
         return f"{content_hash}_{options_hash}"
     
-    def _add_to_cache(self, key: str, result: Dict[str, Any]) -> None:
+    async def _add_to_cache(self, key: str, result: Dict[str, Any]) -> None:
         """
-        Add a result to the cache.
+        Add a result to the cache with thread safety.
         
         Args:
             key: Cache key
@@ -796,17 +903,24 @@ class UnifiedProcessor:
         if not self.cache_enabled:
             return
         
-        # Ensure cache doesn't grow too large
-        if len(self.cache) >= self.cache_size:
-            self._evict_cache_entry()
+        # Make a deep copy to prevent modification after caching
+        import copy
+        result_copy = copy.deepcopy(result)
         
-        # Add to cache
-        self.cache[key] = result
-        self.cache_timestamps[key] = time.time()
+        # Use lock to ensure thread safety
+        async with self.cache_lock:
+            # Ensure cache doesn't grow too large
+            if len(self.cache) >= self.cache_size:
+                await self._evict_cache_entry()
+            
+            # Add to cache
+            self.cache[key] = result_copy
+            self.cache_timestamps[key] = time.time()
+            logger.debug(f"Added item to cache with key {key[:8]}...")
     
-    def _get_from_cache(self, key: str) -> Optional[Dict[str, Any]]:
+    async def _get_from_cache(self, key: str) -> Optional[Dict[str, Any]]:
         """
-        Get a result from the cache.
+        Get a result from the cache with thread safety.
         
         Args:
             key: Cache key
@@ -814,34 +928,42 @@ class UnifiedProcessor:
         Returns:
             Cached result or None if not in cache or expired
         """
-        if not self.cache_enabled or key not in self.cache:
+        if not self.cache_enabled:
             return None
         
-        # Check if entry is expired
-        timestamp = self.cache_timestamps.get(key, 0)
-        if time.time() - timestamp > self.cache_ttl:
-            # Remove expired entry
-            del self.cache[key]
-            del self.cache_timestamps[key]
-            return None
-        
-        # Return cached entry (make a copy to avoid modification)
-        return self.cache[key].copy()
+        # Use lock to ensure thread safety
+        async with self.cache_lock:
+            if key not in self.cache:
+                return None
+            
+            # Check if entry is expired
+            timestamp = self.cache_timestamps.get(key, 0)
+            if time.time() - timestamp > self.cache_ttl:
+                # Remove expired entry
+                del self.cache[key]
+                del self.cache_timestamps[key]
+                logger.debug(f"Removed expired cache entry with key {key[:8]}...")
+                return None
+            
+            # Return cached entry (make a copy to avoid modification)
+            logger.debug(f"Cache hit for key {key[:8]}...")
+            return copy.deepcopy(self.cache[key])
     
-    def _evict_cache_entry(self) -> None:
-        """Evict the oldest cache entry."""
+    async def _evict_cache_entry(self) -> None:
+        """Evict the oldest cache entry with thread safety."""
         if not self.cache:
             return
         
-        # Find oldest entry
+        # Find oldest entry (lock already acquired in _add_to_cache)
         oldest_key = min(self.cache_timestamps.items(), key=lambda x: x[1])[0]
         
         # Remove entry
         del self.cache[oldest_key]
         del self.cache_timestamps[oldest_key]
+        logger.debug(f"Evicted oldest cache entry with key {oldest_key[:8]}...")
     
     async def _cache_cleanup_task(self) -> None:
-        """Background task for cache cleanup."""
+        """Background task for cache cleanup with thread safety."""
         if not self.cache_enabled:
             return
         
@@ -850,25 +972,28 @@ class UnifiedProcessor:
                 # Sleep for half the TTL time
                 await asyncio.sleep(self.cache_ttl / 2)
                 
-                # Find expired entries
-                current_time = time.time()
-                expired_keys = [
-                    key for key, timestamp in self.cache_timestamps.items()
-                    if current_time - timestamp > self.cache_ttl
-                ]
-                
-                # Remove expired entries
-                for key in expired_keys:
-                    if key in self.cache:
-                        del self.cache[key]
-                    if key in self.cache_timestamps:
-                        del self.cache_timestamps[key]
-                
-                if expired_keys:
-                    logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+                # Use lock to ensure thread safety
+                async with self.cache_lock:
+                    # Find expired entries
+                    current_time = time.time()
+                    expired_keys = [
+                        key for key, timestamp in self.cache_timestamps.items()
+                        if current_time - timestamp > self.cache_ttl
+                    ]
+                    
+                    # Remove expired entries
+                    for key in expired_keys:
+                        if key in self.cache:
+                            del self.cache[key]
+                        if key in self.cache_timestamps:
+                            del self.cache_timestamps[key]
+                    
+                    if expired_keys:
+                        logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
                 
             except asyncio.CancelledError:
                 # Task was cancelled
+                logger.info("Cache cleanup task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in cache cleanup task: {str(e)}", exc_info=True)
@@ -901,7 +1026,8 @@ class UnifiedProcessor:
                 "pdf": self.pdf_processor is not None,
                 "docx": self.docx_processor is not None,
                 "ocr": self.ocr_processor is not None,
-                "rag": self.rag_expert is not None
+                "rag": self.rag_expert is not None,
+                "tts": self.tts_pipeline is not None
             }
         }
     
@@ -932,10 +1058,12 @@ class UnifiedProcessor:
         # Perform component-specific cleanup
         if self.rag_expert:
             await self.rag_expert.cleanup()
+            
+        if self.tts_pipeline:
+            await self.tts_pipeline.cleanup()
         
         logger.info("Processor cleanup complete")
-    from app.api.schemas.language import LanguageDetectionRequest
-
+    
     async def detect_language(
         self,
         text: str,
@@ -952,12 +1080,21 @@ class UnifiedProcessor:
         
         Returns:
             A dictionary with language detection results.
-        Raises:
-            AttributeError: If the translation pipeline does not support language detection.
         """
-        if not self.translation_pipeline or not hasattr(self.translation_pipeline, "detect_language"):
-            raise AttributeError("Translation pipeline does not support language detection.")
-        request = LanguageDetectionRequest(text=text, detailed=detailed, model_id=model_id)
+        if not self.initialized:
+            await self.initialize()
+            
+        if not self.translation_pipeline:
+            raise AttributeError("Translation pipeline not initialized")
+        
+        # Create detection request
+        request = LanguageDetectionRequest(
+            text=text, 
+            detailed=detailed, 
+            model_id=model_id
+        )
+        
+        # Perform language detection
         return await self.translation_pipeline.detect_language(request)
 
     async def process_summarization(
@@ -968,9 +1105,20 @@ class UnifiedProcessor:
         request_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Handles summarization using the multipurpose pipeline component.
-        Includes logging and ensures summary is returned properly.
+        Handle summarization using the multipurpose pipeline component.
+        
+        Args:
+            text: Text to summarize
+            language: Language code
+            user_id: Optional user ID for tracking
+            request_id: Optional request ID for tracking
+            
+        Returns:
+            Dict with summarization results
         """
+        if not self.initialized:
+            await self.initialize()
+            
         if not self.multipurpose_pipeline:
             raise RuntimeError("Multipurpose (summarization) pipeline not initialized")
 
@@ -981,17 +1129,30 @@ class UnifiedProcessor:
             request_id=request_id
         )
 
-        summary = result
-        if not summary:
+        if not result:
             logger.warning(f"Summarization output is empty for request {request_id}")
+            return {
+                "input_text": text,
+                "summary": "",
+                "language": language,
+                "model_id": "default"
+            }
+            
+        logger.info(f"Summarization successful for request {request_id}")
+        
+        # Extract summary from result
+        if isinstance(result, dict):
+            summary = result.get("summary", "")
+            model_id = result.get("model_used", "default")
         else:
-            logger.info(f"Summarization successful for request {request_id}: {summary}")
+            summary = str(result)
+            model_id = "default"
 
         return {
             "input_text": text,
-            "summary": summary if isinstance(summary, str) else summary.get("summary", ""),
+            "summary": summary,
             "language": language,
-            "model_id": summary.get("model_used", "default") if isinstance(summary, dict) else "default"
+            "model_id": model_id
         }
 
     async def process_translation(
@@ -1008,9 +1169,26 @@ class UnifiedProcessor:
         request_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Handles translation using the translation pipeline component.
-        Includes logging and ensures translated text is present in result.
+        Handle translation using the translation pipeline component.
+        
+        Args:
+            text: Text to translate
+            source_language: Source language code
+            target_language: Target language code
+            model_id: Optional specific model to use
+            glossary_id: Optional glossary ID
+            preserve_formatting: Whether to preserve formatting
+            formality: Optional formality level
+            verify: Whether to verify translation
+            user_id: Optional user ID for tracking
+            request_id: Optional request ID for tracking
+            
+        Returns:
+            Dict with translation results
         """
+        if not self.initialized:
+            await self.initialize()
+            
         if not self.translation_pipeline:
             raise RuntimeError("Translation pipeline not initialized")
 
@@ -1031,13 +1209,102 @@ class UnifiedProcessor:
         if not translated:
             logger.warning(f"Translation output is empty for request {request_id}")
         else:
-            logger.info(f"Translation successful for request {request_id}: {translated}")
+            logger.info(f"Translation successful for request {request_id}")
 
         return {
             "source_text": text,
             "translated_text": translated,
             "source_language": source_language,
             "target_language": target_language,
-            "confidence": 1.0,
+            "confidence": result.get("confidence", 1.0),
             "model_id": result.get("model_used", "default")
         }
+        
+    async def process_batch_translation(
+        self,
+        texts: List[str],
+        source_language: str,
+        target_language: str,
+        model_id: Optional[str] = None,
+        glossary_id: Optional[str] = None,
+        preserve_formatting: bool = True,
+        formality: Optional[str] = None,
+        verify: bool = False,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Handle batch translation of multiple texts concurrently.
+        
+        Args:
+            texts: List of texts to translate
+            source_language: Source language code
+            target_language: Target language code
+            model_id: Optional specific model to use
+            glossary_id: Optional glossary ID
+            preserve_formatting: Whether to preserve formatting
+            formality: Optional formality level
+            verify: Whether to verify translation
+            user_id: Optional user ID for tracking
+            request_id: Optional request ID for tracking
+            
+        Returns:
+            List of dicts with translation results
+        """
+        if not texts:
+            return []
+            
+        if not self.initialized:
+            await self.initialize()
+            
+        if not self.translation_pipeline:
+            raise RuntimeError("Translation pipeline not initialized")
+            
+        logger.info(f"Processing batch translation of {len(texts)} texts")
+        
+        # Check if translation pipeline supports native batch processing
+        if hasattr(self.translation_pipeline, "translate_batch") and callable(
+                getattr(self.translation_pipeline, "translate_batch")):
+            logger.debug("Using native batch translation")
+            batch_results = await self.translation_pipeline.translate_batch(
+                texts=texts,
+                source_language=source_language,
+                target_language=target_language,
+                model_id=model_id,
+                glossary_id=glossary_id,
+                preserve_formatting=preserve_formatting,
+                formality=formality,
+                verify=verify,
+                user_id=user_id,
+                request_id=request_id
+            )
+            return batch_results
+        
+        # If native batch processing is not available, use parallel processing
+        logger.debug("Using concurrent processing for batch translation")
+        
+        # Create translation tasks for all texts
+        tasks = []
+        for i, text in enumerate(texts):
+            # Generate a unique request ID for each translation
+            text_request_id = f"{request_id}_{i}" if request_id else str(uuid.uuid4())
+            
+            # Create a task for this translation
+            tasks.append(self.process_translation(
+                text=text,
+                source_language=source_language,
+                target_language=target_language,
+                model_id=model_id,
+                glossary_id=glossary_id,
+                preserve_formatting=preserve_formatting,
+                formality=formality,
+                verify=verify,
+                user_id=user_id,
+                request_id=text_request_id
+            ))
+        
+        # Execute all translation tasks concurrently
+        batch_results = await asyncio.gather(*tasks)
+        
+        logger.info(f"Completed batch translation of {len(texts)} texts")
+        return batch_results

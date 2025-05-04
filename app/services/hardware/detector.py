@@ -14,12 +14,17 @@ import re
 from typing import Dict, Any, List, Optional, Tuple, Union
 import time
 from pathlib import Path
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from rich.table import Table
+from rich.text import Text
+
+# Initialize rich console
+console = Console()
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Use the global model loader instead of a fresh ModelRegistry
-from app.services.models.loader import get_model_loader
 
 # Try to import optional dependencies with fallbacks
 try:
@@ -72,8 +77,13 @@ class HardwareDetector:
         Args:
             config (Dict[str, Any]): Recommended configuration dictionary
         """
-        logger.info("Applying configuration to hardware context (placeholder)")
+        logger.info("Applying configuration to hardware context")
         self.applied_config = config
+        
+        console.print(Panel(
+            "[bold green]Hardware Configuration Applied[/bold green]",
+            border_style="green"
+        ))
         
     def detect_all(self) -> Dict[str, Any]:
         """
@@ -82,14 +92,124 @@ class HardwareDetector:
         Returns:
             Dict[str, Any]: Complete hardware information
         """
-        self.detect_system()
-        self.detect_memory()  # Ensure memory detection runs before model registry filtering
-        self.detect_cpu()
-        self.detect_gpu()
-        self.detect_disk()
-        self.detect_network()
+        console.print("[bold cyan]Starting Hardware Detection...[/bold cyan]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console
+        ) as progress:
+            # Create tasks for each detection phase
+            system_task = progress.add_task("[cyan]Detecting system information...", total=100)
+            memory_task = progress.add_task("[cyan]Detecting memory...", total=100, visible=False)
+            cpu_task = progress.add_task("[cyan]Detecting CPU...", total=100, visible=False)
+            gpu_task = progress.add_task("[cyan]Detecting GPU...", total=100, visible=False)
+            disk_task = progress.add_task("[cyan]Detecting storage...", total=100, visible=False)
+            network_task = progress.add_task("[cyan]Detecting network...", total=100, visible=False)
+            
+            # Detect system
+            self.detect_system()
+            progress.update(system_task, advance=100, description="[green]System detection complete")
+            
+            # Show next task
+            progress.update(memory_task, visible=True)
+            self.detect_memory()
+            progress.update(memory_task, advance=100, description="[green]Memory detection complete")
+            
+            # Show next task
+            progress.update(cpu_task, visible=True)
+            self.detect_cpu()
+            progress.update(cpu_task, advance=100, description="[green]CPU detection complete")
+            
+            # Show next task
+            progress.update(gpu_task, visible=True)
+            self.detect_gpu()
+            progress.update(gpu_task, advance=100, description="[green]GPU detection complete")
+            
+            # Show next task
+            progress.update(disk_task, visible=True)
+            self.detect_disk()
+            progress.update(disk_task, advance=100, description="[green]Storage detection complete")
+            
+            # Show next task
+            progress.update(network_task, visible=True)
+            self.detect_network()
+            progress.update(network_task, advance=100, description="[green]Network detection complete")
+        
+        # Display summary
+        self.display_hardware_summary()
         
         return self.get_all_info()
+    
+    def display_hardware_summary(self):
+        """Display a formatted summary of detected hardware"""
+        # Create a summary table
+        table = Table(title="[bold cyan]Hardware Detection Results[/bold cyan]")
+        table.add_column("Component", style="cyan", no_wrap=True)
+        table.add_column("Details", style="white")
+        
+        # System information
+        system_name = self.system_info.get("os_name", self.system_info.get("platform", "Unknown"))
+        system_version = self.system_info.get("os_version", self.system_info.get("platform_version", ""))
+        table.add_row("System", f"{system_name} {system_version}")
+        
+        # CPU information
+        cpu_brand = self.cpu_info.get("brand", "Unknown CPU")
+        cpu_cores = self.cpu_info.get("count_logical", 0)
+        cpu_physical = self.cpu_info.get("count_physical", 0)
+        table.add_row("CPU", f"{cpu_brand} ({cpu_physical} cores / {cpu_cores} threads)")
+        
+        # Memory information
+        total_gb = self.memory_info.get("total_gb", 0)
+        available_gb = self.memory_info.get("available_gb", 0)
+        table.add_row("Memory", f"{total_gb:.1f} GB total / {available_gb:.1f} GB available")
+        
+        # GPU information
+        if self.gpu_info.get("has_gpu", False):
+            gpu_devices = self.gpu_info.get("devices", [])
+            if gpu_devices:
+                gpu_names = [device.get("name", "Unknown GPU") for device in gpu_devices]
+                gpu_info = ", ".join(gpu_names)
+            else:
+                gpu_info = "GPU detected"
+                
+            if self.gpu_info.get("cuda_available", False):
+                gpu_info += " (CUDA enabled)"
+            elif self.gpu_info.get("mps_available", False):
+                gpu_info += " (MPS enabled)"
+                
+            table.add_row("GPU", gpu_info)
+        else:
+            table.add_row("GPU", "[dim]None detected[/dim]")
+        
+        # Disk information
+        disk_total = self.disk_info.get("total_size_gb", 0)
+        disk_free = self.disk_info.get("total_free_gb", 0)
+        table.add_row("Storage", f"{disk_total:.1f} GB total / {disk_free:.1f} GB free")
+        
+        # Network information
+        active_interfaces = [i["name"] for i in self.network_info.get("interfaces", []) if i.get("is_up")]
+        if active_interfaces:
+            table.add_row("Network", f"{len(active_interfaces)} active interfaces")
+        else:
+            table.add_row("Network", "[dim]No active interfaces[/dim]")
+        
+        # Display the table
+        console.print(table)
+        
+        # Show recommendations panel
+        recommendations = self.recommend_config()
+        
+        console.print(Panel(
+            f"[bold cyan]Hardware Recommendations[/bold cyan]\n"
+            f"Device: [yellow]{recommendations.get('device', 'cpu')}[/yellow]\n"
+            f"Model Size: [green]{recommendations.get('memory', {}).get('model_size', 'unknown')}[/green]\n"
+            f"Batch Size: [magenta]{recommendations.get('memory', {}).get('batch_size', 'unknown')}[/magenta]",
+            border_style="blue"
+        ))
     
     def detect_system(self) -> Dict[str, Any]:
         """
@@ -672,15 +792,24 @@ class HardwareDetector:
         Returns:
             Dict[str, Any]: Configuration recommendations
         """
-        # Simplified: Always call detection methods once at the top
-        self.detect_gpu()
-        self.detect_cpu()
-        self.detect_memory()
-        self.detect_disk()
+        # Make sure all detections have run
+        if not hasattr(self, 'gpu_info') or not self.gpu_info:
+            self.detect_gpu()
+        if not hasattr(self, 'cpu_info') or not self.cpu_info:
+            self.detect_cpu()
+        if not hasattr(self, 'memory_info') or not self.memory_info:
+            self.detect_memory()
+        if not hasattr(self, 'disk_info') or not self.disk_info:
+            self.detect_disk()
 
         recommendations = {}
 
+        # Get references to hardware info
         gpu_info = self.gpu_info if hasattr(self, 'gpu_info') else {}
+        memory_info = self.memory_info if hasattr(self, 'memory_info') else {}
+        cpu_info = self.cpu_info if hasattr(self, 'cpu_info') else {}
+        
+        # Device recommendations
         recommendations["use_gpu"] = gpu_info.get("has_gpu", False) if isinstance(gpu_info, dict) else False
 
         if gpu_info.get("cuda_available", False):
@@ -691,7 +820,6 @@ class HardwareDetector:
             recommendations["device"] = "cpu"
 
         # Memory recommendations
-        memory_info = self.memory_info if hasattr(self, 'memory_info') else {}
         available_memory = memory_info.get("available_gb", 0)
         recommendations["memory"] = {}
 
@@ -723,7 +851,6 @@ class HardwareDetector:
             recommendations["memory"]["model_size"] = "tiny"
 
         # CPU recommendations
-        cpu_info = self.cpu_info if hasattr(self, 'cpu_info') else {}
         cpu_cores = cpu_info.get("count_logical", 1)
         recommendations["cpu"] = {}
 
@@ -741,9 +868,10 @@ class HardwareDetector:
             recommendations["cpu"]["use_threads"] = False
             recommendations["cpu"]["num_threads"] = 1
 
-        # Model precision recommendations and memory for Apple Silicon
+        # Model precision recommendations
         gpu_devices = gpu_info.get("devices", [])
         gpu_memory = sum(device.get("total_memory_gb", 0) for device in gpu_devices)
+        
         if recommendations["device"] == "cuda":
             if gpu_memory >= 16:
                 recommendations["precision"] = "float16"
@@ -754,9 +882,14 @@ class HardwareDetector:
         elif recommendations["device"] == "mps":
             # Apple MPS device - enhanced logic for Apple Silicon (M1/M2/M3/M4)
             recommendations["precision"] = "float16"
-            recommendations["memory"]["model_size"] = "large"
-            recommendations["memory"]["batch_size"] = 24
-            recommendations["memory"]["max_sequence_length"] = 1536
+            # Check for high-end Apple Silicon
+            for device in gpu_devices:
+                if device.get("type") == "MPS" and device.get("apple_silicon"):
+                    if device.get("m3_family") or device.get("m4_family"):
+                        # For M3/M4 we can use larger models
+                        recommendations["memory"]["model_size"] = "large" 
+                        recommendations["memory"]["batch_size"] = 24
+                        recommendations["memory"]["max_sequence_length"] = 1536
         else:
             # CPU precision
             if cpu_info.get("supports_avx2", False):
@@ -805,22 +938,6 @@ class HardwareDetector:
             recommendations["rag"]["retriever"] = "dense"
         else:
             recommendations["rag"]["retriever"] = "sparse"
-
-        # Validate GPU memory for MPS, fallback to default if not present
-        if recommendations["device"] == "mps":
-            # If we have a total_memory_gb on MPS, use it for further logic if needed
-            mps_device = next((d for d in gpu_devices if d.get("type") == "MPS"), None)
-            if mps_device and "total_memory_gb" in mps_device:
-                # Could refine batch/model_size/max_sequence_length based on detected memory
-                pass
-            else:
-                # Ensure no KeyError if missing, already set above
-                pass
-
-        # Use the injected global model loader for model/tokenizer fetching
-        from app.services.models.loader import get_model_loader
-        loader = get_model_loader()
-        model_name, _ = loader.get_model_and_tokenizer("ner_detection")
 
         return recommendations
         
@@ -893,8 +1010,10 @@ class HardwareDetector:
                 json.dump(data, f, indent=2)
                 
             logger.info(f"Exported hardware information to {filepath}")
+            console.print(f"[green]✓ Hardware information exported to:[/green] [cyan]{filepath}[/cyan]")
             return True
                 
         except Exception as e:
             logger.error(f"Error exporting hardware information: {e}")
+            console.print(f"[red]⚠ Error exporting hardware information: {str(e)}[/red]")
             return False

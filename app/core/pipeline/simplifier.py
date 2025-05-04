@@ -1,9 +1,12 @@
-# app/core/pipeline/simplifier.py
 """
 Text Simplification Pipeline for CasaLingua
 
 This module handles text simplification to different levels of complexity,
 with support for target grade levels and domain-specific simplification.
+
+Author: Exygy Development Team
+Version: 1.0.0
+License: MIT
 """
 
 import re
@@ -11,14 +14,9 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from fastapi import Request
-from app.core.pipeline.tokenizer import TokenizerPipeline
+from app.utils.logging import get_logger
 
-from app.services.models.manager import ModelManager
-
-__all__ = ["SimplificationPipeline"]
-
-logger = logging.getLogger("casalingua.core.simplifier")
+logger = get_logger("casalingua.core.simplifier")
 
 class SimplificationPipeline:
     """
@@ -33,9 +31,8 @@ class SimplificationPipeline:
     
     def __init__(
         self,
-        model_manager: ModelManager,
+        model_manager,
         config: Dict[str, Any] = None,
-        tokenizer: Optional[TokenizerPipeline] = None,
         registry_config: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -44,17 +41,15 @@ class SimplificationPipeline:
         Args:
             model_manager: Model manager for accessing simplification models
             config: Configuration dictionary
-            tokenizer: Optional tokenizer pipeline for tokenizing input text
+            registry_config: Registry configuration for models
         """
         self.model_manager = model_manager
         self.config = config or {}
         self.registry_config = registry_config or {}
         self.initialized = False
-        if not tokenizer:
-            model_info = self.registry_config.get("simplifier", {})
-            model_name = model_info.get("tokenizer_name")
-            tokenizer = TokenizerPipeline(model_name=model_name, task_type="simplification")
-        self.tokenizer = tokenizer
+        
+        # Model type for simplification
+        self.model_type = "simplifier"
         
         # Simplification levels map to grade levels
         self.level_grade_map: Dict[int, int] = {
@@ -64,9 +59,6 @@ class SimplificationPipeline:
             4: 6,   # Elementary school
             5: 4    # Early elementary
         }
-        
-        # Initialize simplification models
-        self.simplification_models: Dict[str, Any] = {}
         
         # Load grade level vocabulary
         self.grade_level_vocabulary: Dict[int, Dict[str, Dict[str, str]]] = {}
@@ -84,6 +76,15 @@ class SimplificationPipeline:
             return
         
         logger.info("Initializing simplification pipeline")
+        
+        # Load simplification model
+        try:
+            logger.info(f"Loading simplification model ({self.model_type})")
+            await self.model_manager.load_model(self.model_type)
+            logger.info("Simplification model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading simplification model: {str(e)}")
+            logger.warning("Pipeline will function with reduced capabilities")
         
         # Initialize grade level vocabulary
         await self._load_grade_level_vocabulary()
@@ -120,7 +121,7 @@ class SimplificationPipeline:
             - metrics: Readability metrics
         """
         if not self.initialized:
-            raise RuntimeError("Simplification pipeline not initialized")
+            await self.initialize()
         
         if not text:
             return {"simplified_text": "", "model_used": "none"}
@@ -141,46 +142,48 @@ class SimplificationPipeline:
         logger.debug(f"Simplifying text to level {level} (grade {target_grade})")
         
         try:
-            # 1. Get simplification model
-            model_name = options.get("model_name")
-            simplification_model = await self._get_simplification_model(language, model_name)
+            # Get model ID if specified, otherwise use default
+            model_id = options.get("model_name", self.model_type)
             
-            if not simplification_model:
-                raise ValueError(f"No simplification model available for {language}")
-            
-            # Tokenize input text using the appropriate tokenizer
-            token_ids = self.tokenizer.tokenize(text)
-            
-            # 2. Prepare simplification context
-            context = options.get("context", [])
-            domain = options.get("domain")
-            
+            # Prepare simplification input
             input_data = {
                 "text": text,
-                "language": language,
-                "level": level,
-                "grade_level": target_grade,
-                "context": context,
-                "domain": domain,
-                "tokens": token_ids,
+                "source_language": language,
+                "parameters": {
+                    "level": level,
+                    "grade_level": target_grade,
+                    "domain": options.get("domain"),
+                    "preserve_formatting": options.get("preserve_formatting", True)
+                }
             }
             
-            # 3. Run simplification
-            start_time = time.time()
+            # Add context if provided
+            if "context" in options:
+                input_data["context"] = options["context"]
             
+            # Run simplification model
+            start_time = time.time()
             result = await self.model_manager.run_model(
-                simplification_model,
-                "simplify",
+                model_id,
+                "process",
                 input_data
             )
-            
             processing_time = time.time() - start_time
-            logger.debug(f"Simplification completed in {processing_time:.3f}s")
             
-            # 4. Post-process simplification
-            simplified_text = result.get("simplified_text", text)
+            # Extract simplification results
+            if isinstance(result, dict) and "result" in result:
+                simplified_text = result["result"]
+                
+                # Handle different result formats
+                if isinstance(simplified_text, list) and simplified_text:
+                    simplified_text = simplified_text[0]
+                elif not isinstance(simplified_text, str):
+                    simplified_text = str(simplified_text)
+            else:
+                # Handle unexpected result format
+                simplified_text = str(result) if result else text
             
-            # 5. Apply grade level vocabulary if available
+            # Apply grade level vocabulary if available
             if target_grade in self.grade_level_vocabulary:
                 simplified_text = self._apply_grade_level_vocabulary(
                     simplified_text,
@@ -188,12 +191,14 @@ class SimplificationPipeline:
                     target_grade
                 )
             
-            # 6. Calculate readability metrics
+            # Calculate readability metrics
             metrics = self._calculate_readability_metrics(simplified_text, language)
+            
+            logger.debug(f"Simplification completed in {processing_time:.3f}s")
             
             return {
                 "simplified_text": simplified_text,
-                "model_used": model_name or getattr(simplification_model, "name", "unknown"),
+                "model_used": model_id,
                 "level": level,
                 "grade_level": target_grade,
                 "metrics": metrics,
@@ -201,42 +206,8 @@ class SimplificationPipeline:
             }
             
         except Exception as e:
-            logger.exception("Simplification error")
+            logger.error(f"Simplification error: {str(e)}", exc_info=True)
             raise
-    
-    async def _get_simplification_model(self, 
-                                      language: str,
-                                      model_name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get the appropriate simplification model.
-        
-        Args:
-            language: Language code
-            model_name: Optional specific model name
-            
-        Returns:
-            Simplification model
-        """
-        # If specific model requested, use it
-        if model_name:
-            model = await self.model_manager.get_model(model_name)
-            if model:
-                return model
-            logger.warning(f"Requested model {model_name} not available, using fallback")
-        
-        # Get language specific model
-        model_key = f"simplification_{language}"
-        model = await self.model_manager.get_model(model_key)
-        
-        # Fall back to general simplification model
-        if not model:
-            model = await self.model_manager.get_model("simplification")
-        
-        if not model:
-            logger.error(f"No simplification model available for {language}")
-            return None
-        
-        return model
     
     async def _load_grade_level_vocabulary(self) -> None:
         """

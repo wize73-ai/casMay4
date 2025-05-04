@@ -17,6 +17,10 @@ CasaLingua is a comprehensive language translation and processing platform desig
 - **Quality Verification**: Built-in translation quality checks
 - **Audit Logging**: Comprehensive tracking for compliance and security
 - **Flexible Deployment**: API-first design with cloud or on-premises options
+- **High Performance**: Request-level caching, parallel processing, and smart batching
+- **Streaming Responses**: Support for real-time, chunk-based responses for large documents
+- **Advanced Error Handling**: Standardized error categorization with comprehensive fallbacks
+- **Bloom Housing Integration**: Seamless compatibility with Bloom Housing API format
 
 ## Getting Started
 
@@ -113,8 +117,19 @@ casalingua/
 
 ### Running Tests
 
+Run all tests:
 ```bash
 pytest
+```
+
+Run API optimization tests:
+```bash
+python app/tests/test_optimizations.py
+```
+
+Run individual component tests:
+```bash
+python app/tests/run_tests.py
 ```
 
 ### Style Guide

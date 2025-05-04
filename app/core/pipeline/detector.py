@@ -1,9 +1,12 @@
-# app/core/pipeline/detector.py
 """
 Input Type Detection for CasaLingua
 
 This module provides functionality to automatically detect input types
 and determine the appropriate processing pipeline.
+
+Author: Exygy Development Team
+Version: 1.0.0
+License: MIT
 """
 
 import os
@@ -13,13 +16,9 @@ import mimetypes
 import logging
 from typing import Dict, Any, Optional, List, Union, Tuple
 
-# Import TokenizerPipeline for optional tokenization in InputDetector
-from app.core.pipeline.tokenizer import TokenizerPipeline
-# Import get_model_loader for dynamic tokenizer loading
-from app.services.models.loader import get_model_loader
-from typing import Dict
+from app.utils.logging import get_logger
 
-logger = logging.getLogger("casalingua.core.detector")
+logger = get_logger("casalingua.core.detector")
 
 class InputDetector:
     """
@@ -32,15 +31,24 @@ class InputDetector:
     - Audio (for speech-to-text)
     """
     
-    def __init__(self, config: Dict[str, Any] = None, tokenizer: Optional[TokenizerPipeline] = None, registry_config: Optional[Dict[str, Any]] = None):
-        """Initialize the input detector with configuration and optional tokenizer."""
+    def __init__(
+        self,
+        model_manager,
+        config: Dict[str, Any] = None,
+        registry_config: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Initialize the input detector.
+        
+        Args:
+            model_manager: Model manager for accessing detection models
+            config: Configuration dictionary
+            registry_config: Registry configuration for models
+        """
+        self.model_manager = model_manager
         self.config = config or {}
         self.registry_config = registry_config or {}
-        if tokenizer is None:
-            model_info = self.registry_config["ner_detection"]
-            model_name = model_info["tokenizer_name"]
-            tokenizer = TokenizerPipeline(model_name=model_name, task_type="ner_detection")
-        self.tokenizer = tokenizer
+        self.model_type = "ner_detection"
         
         # Initialize mime type mapping
         self.mime_types = {
@@ -105,7 +113,7 @@ class InputDetector:
         # Detect based on content
         if isinstance(content, str):
             logger.debug("Content is string, detecting text type")
-            return self._detect_text_type(content, metadata)
+            return await self._detect_text_type(content, metadata)
         else:
             logger.debug("Content is binary, detecting binary type")
             return self._detect_binary_type(content, metadata)
@@ -155,7 +163,7 @@ class InputDetector:
             "metadata": metadata
         }
     
-    def _detect_text_type(self, 
+    async def _detect_text_type(self, 
                          text: str, 
                          metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -189,15 +197,42 @@ class InputDetector:
         
         # Detect language if not provided
         if "source_language" not in metadata:
-            detected_lang = self._detect_language(text)
+            detected_lang = await self._detect_language(text)
             if detected_lang:
                 metadata["detected_language"] = detected_lang
                 metadata["source_language"] = detected_lang
                 logger.debug(f"Detected language: {detected_lang}")
 
-        # If tokenizer is provided, add tokens to metadata
-        if self.tokenizer:
-            metadata["tokens"] = self.tokenizer.encode(text)
+        # Use NER model to enhance detection if available
+        try:
+            # Prepare input for NER model
+            input_data = {
+                "text": text[:500],  # Use limited text for performance
+                "source_language": metadata.get("source_language", "en")
+            }
+            
+            # Run NER model through model manager
+            result = await self.model_manager.run_model(
+                self.model_type,
+                "process",
+                input_data
+            )
+            
+            # Extract entities and enhance metadata
+            if isinstance(result, dict) and "result" in result:
+                entities = result["result"]
+                if entities:
+                    # Count entity types
+                    entity_types = {}
+                    for entity in entities:
+                        entity_type = entity.get("type", "")
+                        entity_types[entity_type] = entity_types.get(entity_type, 0) + 1
+                    
+                    metadata["detected_entities"] = entity_types
+                    logger.debug(f"Detected entities: {entity_types}")
+            
+        except Exception as e:
+            logger.debug(f"NER detection failed: {str(e)}")
 
         return {
             "input_type": input_type,
@@ -374,9 +409,9 @@ class InputDetector:
         # If more than 3 legal terms, consider it legal text
         return legal_term_count >= 3
     
-    def _detect_language(self, text: str) -> Optional[str]:
+    async def _detect_language(self, text: str) -> Optional[str]:
         """
-        Detect the language of text content.
+        Detect the language of text content using model manager.
         
         Args:
             text: Text to analyze
@@ -387,7 +422,35 @@ class InputDetector:
         if not text or len(text) < 10:
             return None
         
-        # Simple language detection based on common words
+        try:
+            # Prepare input for language detection
+            input_data = {
+                "text": text[:500],  # Use limited text for performance
+                "parameters": {"detailed": False}
+            }
+            
+            # Try to use language detection model through model manager
+            result = await self.model_manager.run_model(
+                "language_detection",
+                "process",
+                input_data
+            )
+            
+            # Extract language from result
+            if isinstance(result, dict) and "result" in result:
+                detection_result = result["result"]
+                
+                if isinstance(detection_result, dict):
+                    return detection_result.get("language")
+                elif isinstance(detection_result, list) and detection_result:
+                    return detection_result[0].get("language")
+            
+            logger.debug("Language detection model gave unexpected result, using pattern fallback")
+            
+        except Exception as e:
+            logger.debug(f"Language detection model failed: {str(e)}, using pattern fallback")
+        
+        # Fall back to pattern-based detection
         best_match = None
         highest_count = 0
         

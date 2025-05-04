@@ -44,7 +44,8 @@ from app.ui.console import console
 
 # Import enhanced hardware detection and model management
 from app.services.hardware.detector import HardwareDetector
-from app.services.models.manager import ModelManager as EnhancedModelManager
+from app.services.models.loader import ModelLoader
+from app.services.models.manager import EnhancedModelManager
 
 # Import core components
 from app.core.pipeline.processor import UnifiedProcessor
@@ -116,16 +117,57 @@ class ModelConfig:
     quantization: int  # bits (4, 8, 16)
 
 @dataclass
+class GPUInfo:
+    """Information about a single GPU device"""
+    device_id: int
+    name: str
+    memory_total: int  # in bytes
+    memory_available: int  # in bytes
+    compute_capability: Optional[str] = None
+    vendor: str = "unknown"
+    
+    def __str__(self) -> str:
+        return f"{self.name} (ID: {self.device_id}, {self.memory_total / (1024**3):.1f} GB)"
+
+@dataclass
 class EnhancedHardwareInfo:
+    """Comprehensive hardware information with multi-GPU support"""
     total_memory: int  # in bytes
     available_memory: int  # in bytes
     processor_type: ProcessorType
     has_gpu: bool
-    gpu_memory: Optional[int] = None  # in bytes, None if no GPU
     cpu_cores: int = 0
     cpu_threads: int = 0
-    gpu_name: Optional[str] = None
     system_name: Optional[str] = None
+    gpu_count: int = 0
+    
+    # For backwards compatibility
+    gpu_memory: Optional[int] = None  # Total memory of first GPU, None if no GPU
+    gpu_name: Optional[str] = None  # Name of first GPU, None if no GPU
+    
+    # New multi-GPU support
+    gpus: List[GPUInfo] = field(default_factory=list)  # List of all GPUs
+    
+    def get_best_gpu(self) -> Optional[GPUInfo]:
+        """Returns the GPU with the most available memory, or None if no GPUs"""
+        if not self.gpus:
+            return None
+        return max(self.gpus, key=lambda gpu: gpu.memory_available)
+    
+    def get_gpu_by_id(self, device_id: int) -> Optional[GPUInfo]:
+        """Returns the GPU with the specified device ID, or None if not found"""
+        for gpu in self.gpus:
+            if gpu.device_id == device_id:
+                return gpu
+        return None
+    
+    def get_total_gpu_memory(self) -> int:
+        """Returns the total memory across all GPUs in bytes"""
+        return sum(gpu.memory_total for gpu in self.gpus)
+        
+    def get_available_gpu_memory(self) -> int:
+        """Returns the available memory across all GPUs in bytes"""
+        return sum(gpu.memory_available for gpu in self.gpus)
 
 class ModelSizeConfig:
     """Configuration details for models of different sizes"""
@@ -176,7 +218,10 @@ class EnhancedHardwareDetector:
         self.logger = logging.getLogger("casa_lingua.hardware")
     
     async def detect_all(self) -> EnhancedHardwareInfo:
-        """Detect all hardware capabilities and return comprehensive information."""
+        """
+        Detect all hardware capabilities and return comprehensive information
+        with multi-GPU support.
+        """
         self.logger.info("Detecting hardware capabilities...")
         
         # Get memory information
@@ -192,19 +237,22 @@ class EnhancedHardwareDetector:
         processor_type = self._detect_processor_type()
         system_name = platform.system()
         
-        # Check for GPU
-        has_gpu, gpu_memory, gpu_name = self._detect_gpu()
+        # Check for GPUs with the enhanced multi-GPU detection
+        has_gpu, first_gpu_memory, first_gpu_name, gpu_list = self._detect_gpu()
         
+        # Create enhanced hardware info with multi-GPU support
         hardware_info = EnhancedHardwareInfo(
             total_memory=total_memory,
             available_memory=available_memory,
             processor_type=processor_type,
             has_gpu=has_gpu,
-            gpu_memory=gpu_memory,
+            gpu_memory=first_gpu_memory,  # For backward compatibility
+            gpu_name=first_gpu_name,      # For backward compatibility
             cpu_cores=cpu_cores,
             cpu_threads=cpu_threads,
-            gpu_name=gpu_name,
-            system_name=system_name
+            system_name=system_name,
+            gpu_count=len(gpu_list),
+            gpus=gpu_list
         )
         
         # Log hardware details
@@ -215,8 +263,22 @@ class EnhancedHardwareDetector:
         self.logger.info(f"  Memory: {total_memory / (1024**3):.1f} GB (Total), {available_memory / (1024**3):.1f} GB (Available)")
         
         if has_gpu:
-            self.logger.info(f"  GPU: {gpu_name}")
-            self.logger.info(f"  GPU Memory: {gpu_memory / (1024**3):.1f} GB")
+            # Log summary of all GPUs
+            self.logger.info(f"  GPUs: {len(gpu_list)} device(s) detected")
+            
+            # Log detailed information for each GPU
+            for i, gpu in enumerate(gpu_list):
+                self.logger.info(f"  GPU {i}: {gpu.name}")
+                self.logger.info(f"    Memory: {gpu.memory_total / (1024**3):.1f} GB total, {gpu.memory_available / (1024**3):.1f} GB available")
+                if gpu.compute_capability:
+                    self.logger.info(f"    Compute Capability: {gpu.compute_capability}")
+                self.logger.info(f"    Vendor: {gpu.vendor}")
+                
+            # Log total GPU memory
+            if len(gpu_list) > 1:
+                total_gpu_memory = hardware_info.get_total_gpu_memory()
+                available_gpu_memory = hardware_info.get_available_gpu_memory()
+                self.logger.info(f"  Total GPU Memory: {total_gpu_memory / (1024**3):.1f} GB total, {available_gpu_memory / (1024**3):.1f} GB available")
         else:
             self.logger.info("  GPU: None detected")
         
@@ -246,21 +308,96 @@ class EnhancedHardwareDetector:
             
         return ProcessorType.OTHER
     
-    def _detect_gpu(self) -> Tuple[bool, Optional[int], Optional[str]]:
-        """Detect if a GPU is available, its memory, and name."""
+    def _detect_gpu(self) -> Tuple[bool, Optional[int], Optional[str], List[GPUInfo]]:
+        """
+        Detect all available GPUs and gather detailed information about each one.
+        
+        Returns:
+            Tuple containing:
+            - bool: Whether any GPU is available
+            - Optional[int]: Memory of first GPU in bytes (for backward compat)
+            - Optional[str]: Name of first GPU (for backward compat)
+            - List[GPUInfo]: List of all GPU details
+        """
+        gpu_list = []
         has_gpu = torch.cuda.is_available()
+        first_gpu_memory = None
+        first_gpu_name = None
         
         if has_gpu:
             # Get GPU info via torch
             device_count = torch.cuda.device_count()
-            if device_count > 0:
-                # Use the first GPU for simplicity
-                device_props = torch.cuda.get_device_properties(0)
-                gpu_memory = device_props.total_memory
-                gpu_name = device_props.name
-                return True, gpu_memory, gpu_name
+            self.logger.info(f"Detected {device_count} GPU devices")
+            
+            for device_id in range(device_count):
+                try:
+                    # Get properties for this GPU
+                    device_props = torch.cuda.get_device_properties(device_id)
+                    
+                    # Get memory information
+                    gpu_memory_total = device_props.total_memory
+                    
+                    # Try to estimate available memory
+                    # This is an approximation since torch doesn't expose this directly
+                    try:
+                        torch.cuda.set_device(device_id)
+                        torch.cuda.empty_cache()
+                        # Reserve a small tensor to force memory allocation
+                        temp = torch.zeros(1024, device=f'cuda:{device_id}')
+                        # Get memory stats after allocation
+                        gpu_memory_allocated = torch.cuda.memory_allocated(device_id)
+                        gpu_memory_reserved = torch.cuda.memory_reserved(device_id)
+                        # Calculate available as total minus reserved
+                        gpu_memory_available = gpu_memory_total - gpu_memory_reserved
+                        # Clean up
+                        del temp
+                        torch.cuda.empty_cache()
+                    except Exception as e:
+                        self.logger.warning(f"Could not determine available memory for GPU {device_id}: {e}")
+                        # Assume 90% of total memory is available if we can't measure it
+                        gpu_memory_available = int(gpu_memory_total * 0.9)
+                    
+                    # Determine vendor
+                    gpu_name = device_props.name.lower()
+                    if "nvidia" in gpu_name:
+                        vendor = "nvidia"
+                    elif "amd" in gpu_name or "radeon" in gpu_name:
+                        vendor = "amd"
+                    else:
+                        vendor = "unknown"
+                    
+                    # Get compute capability for NVIDIA GPUs
+                    compute_capability = None
+                    if vendor == "nvidia":
+                        compute_capability = f"{device_props.major}.{device_props.minor}"
+                    
+                    # Create GPU info object
+                    gpu_info = GPUInfo(
+                        device_id=device_id,
+                        name=device_props.name,
+                        memory_total=gpu_memory_total,
+                        memory_available=gpu_memory_available,
+                        compute_capability=compute_capability,
+                        vendor=vendor
+                    )
+                    
+                    # Add to list
+                    gpu_list.append(gpu_info)
+                    
+                    # Store first GPU info for backward compatibility
+                    if device_id == 0:
+                        first_gpu_memory = gpu_memory_total
+                        first_gpu_name = device_props.name
+                    
+                    # Log GPU details
+                    self.logger.info(f"GPU {device_id}: {device_props.name}, "
+                                   f"Memory: {gpu_memory_total / (1024**3):.1f} GB total, "
+                                   f"{gpu_memory_available / (1024**3):.1f} GB available")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error detecting GPU {device_id}: {e}")
         
-        return False, None, None
+        return has_gpu, first_gpu_memory, first_gpu_name, gpu_list
     
     def recommend_config(self) -> Dict[ModelType, ModelSize]:
         """Determine appropriate model sizes based on hardware capabilities."""
@@ -346,22 +483,81 @@ class EnhancedHardwareDetector:
         return model_config
     
     def _determine_quantization(self, model_type: ModelType) -> int:
-        """Determine the quantization level based on hardware."""
+        """
+        Determine the most efficient quantization level based on hardware and memory constraints.
+        Implements aggressive quantization for low-memory environments.
+        
+        Returns:
+            int: Quantization level in bits (4, 8, or 16)
+        """
         processor_type = self._detect_processor_type()
         model_sizes = self.recommend_config()
         
-        # Apply different quantization based on processor type
+        # Get memory information
+        mem = psutil.virtual_memory()
+        available_mem_gb = mem.available / (1024**3)
+        
+        # Get CPU information for thread-count based decision making
+        cpu_threads = psutil.cpu_count(logical=True)
+        
+        # Check for low memory environment (less than 8GB available)
+        is_low_memory = available_mem_gb < 8.0
+        # Check for very low memory environment (less than 4GB available)
+        is_very_low_memory = available_mem_gb < 4.0
+        # Check for extreme low memory environment (less than 2GB available)
+        is_extreme_low_memory = available_mem_gb < 2.0
+        
+        # Log memory status for diagnostics
+        logger.info(f"Memory status: {available_mem_gb:.2f}GB available, " +
+                   f"Low memory: {is_low_memory}, Very low: {is_very_low_memory}, Extreme: {is_extreme_low_memory}")
+        
+        # Apply quantization based on hardware type and memory constraints
         if processor_type == ProcessorType.APPLE_SILICON:
-            return 16  # 16-bit precision for Apple Silicon
-        elif processor_type == ProcessorType.INTEL:
-            # For Intel, use 8-bit for larger models, 4-bit for smaller
-            if model_sizes[model_type] == ModelSize.LARGE:
-                return 8
+            # Apple Silicon can efficiently handle 16-bit, but use lower in extreme cases
+            if is_extreme_low_memory:
+                return 4  # Use 4-bit in extreme low memory cases
+            elif is_very_low_memory:
+                return 8  # Use 8-bit in very low memory cases
             else:
+                return 16  # Default 16-bit precision for Apple Silicon
+                
+        elif processor_type == ProcessorType.NVIDIA:
+            # NVIDIA GPUs work well with 8-bit, but can use 4-bit for low memory
+            if is_very_low_memory:
+                return 4  # Use 4-bit in very low memory cases
+            else:
+                return 8  # Default 8-bit for NVIDIA
+                
+        elif processor_type == ProcessorType.INTEL:
+            # For Intel, aggressively quantize based on model size and memory
+            if is_extreme_low_memory:
+                return 4  # Always use 4-bit in extreme low memory cases
+            elif is_low_memory:
+                return 4  # Use 4-bit in low memory cases
+            else:
+                # Use 8-bit for smaller models, 4-bit for larger models to conserve memory
+                if model_sizes[model_type] == ModelSize.LARGE:
+                    return 4
+                elif model_sizes[model_type] == ModelSize.MEDIUM:
+                    return 8
+                else:
+                    return 8
+                    
+        elif processor_type == ProcessorType.AMD:
+            # AMD similar to Intel but may handle 8-bit better
+            if is_very_low_memory:
                 return 4
+            else:
+                return 8
+                
         else:
-            # Default case
-            return 8
+            # Unknown processor - be conservative with quantization
+            if is_low_memory:
+                return 4  # Aggressive quantization for low memory
+            else:
+                return 8  # Default fallback
+                
+        # Note: This line was unreachable due to the returns above, removed to prevent errors
 
 # Find the first EnhancedModelManager class definition
 
@@ -529,6 +725,30 @@ async def lifespan(app: FastAPI):
         app_logger.info("PHASE 5/5: Initializing API endpoints...")
         # Will be handled by FastAPI after context manager yields
 
+        # Initialize route cache if enabled in config
+        app_logger.info("Initializing route cache...")
+        route_cache_enabled = config.get("enable_route_cache", True)
+        if route_cache_enabled:
+            from app.services.storage.route_cache import RouteCacheManager
+            # Initialize default cache instance
+            default_cache = await RouteCacheManager.get_cache(
+                name="default",
+                max_size=config.get("route_cache_size", 1000),
+                ttl_seconds=config.get("route_cache_ttl", 3600),
+                bloom_compatible=True
+            )
+            # Initialize translation-specific cache
+            translation_cache = await RouteCacheManager.get_cache(
+                name="translation",
+                max_size=config.get("translation_cache_size", 2000),
+                ttl_seconds=config.get("translation_cache_ttl", 7200),
+                bloom_compatible=True
+            )
+            app.state.route_cache = True  # Flag to indicate route cache is available
+            app_logger.info(f"✓ Route cache initialized with {default_cache.max_size} entries default capacity")
+        else:
+            app_logger.info("Route cache is disabled in configuration")
+        
         # Store components in application state
         app.state.config = config
         app.state.hardware_detector = hardware_detector
@@ -588,6 +808,13 @@ async def lifespan(app: FastAPI):
             app.state.metrics.save_metrics()
             app_logger.info("✓ Performance metrics saved")
 
+        # Clean up route cache if enabled
+        if hasattr(app.state, "route_cache") and app.state.route_cache:
+            app_logger.info("Cleaning up route cache...")
+            from app.services.storage.route_cache import RouteCacheManager
+            await RouteCacheManager.clear_all()
+            app_logger.info("✓ Route cache cleared")
+        
         # Unload models
         if hasattr(app.state, "model_manager") and app.state.model_manager:
             app_logger.info("Unloading models...")
@@ -649,6 +876,9 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     return response
 
+# Import enhanced error handler
+from app.utils.error_handler import APIError, ErrorCategory, ErrorResponse
+
 # Exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -665,20 +895,45 @@ async def global_exception_handler(request: Request, exc: Exception):
         route = request.url.path
         app.state.metrics.record_request(route, False, 0)
     
-    return JSONResponse(
-        status_code=500,
-        content={
-            "status": "error",
-            "message": "Internal server error",
-            "detail": str(exc) if os.environ.get("DEBUG", "false").lower() == "true" else None
-        }
-    )
+    # Generate request ID for tracking
+    import uuid
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    
+    # Use new error handling system
+    if isinstance(exc, APIError):
+        # If it's our custom APIError, use its response format
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_response().dict()
+        )
+    else:
+        # For other exceptions, convert to our standard format
+        error = ErrorResponse(
+            status_code=500,
+            error_code="internal_error",
+            category=ErrorCategory.INTERNAL_ERROR,
+            message="Internal server error",
+            details={"error": str(exc)} if os.environ.get("DEBUG", "false").lower() == "true" else None,
+            request_id=request_id
+        )
+        return JSONResponse(
+            status_code=500,
+            content=error.dict()
+        )
 
 # Include routers
 app.include_router(health_router)
 app.include_router(pipeline_router, prefix="/pipeline", tags=["Pipeline"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin"])
 app.include_router(rag_router, prefix="/rag", tags=["RAG"])
+
+# Include Bloom Housing compatibility router
+from app.api.routes.bloom_housing import router as bloom_housing_router
+app.include_router(bloom_housing_router)
+
+# Include streaming API routes
+from app.api.routes.streaming import router as streaming_router
+app.include_router(streaming_router)
 
 # Add new model management endpoint
 from fastapi import APIRouter
@@ -728,6 +983,50 @@ async def reload_model(model_type: str):
     
     await app.state.model_manager.reload_model(model_enum)
     return {"status": "success", "message": f"Model {model_type} reloaded successfully"}
+
+@model_router.get("/cache/stats")
+async def get_cache_stats():
+    """Get statistics about the route cache."""
+    if not hasattr(app.state, "route_cache") or not app.state.route_cache:
+        raise HTTPException(status_code=404, detail="Route cache is not enabled")
+    
+    from app.services.storage.route_cache import RouteCacheManager
+    cache_stats = await RouteCacheManager.get_all_stats()
+    
+    return {
+        "status": "success",
+        "data": cache_stats,
+        "summary": {
+            "total_cache_entries": sum(stats.get("size", 0) for stats in cache_stats.values()),
+            "total_hit_rate": sum(stats.get("hit_rate", 0) * stats.get("size", 0) 
+                               for stats in cache_stats.values()) / 
+                           max(1, sum(stats.get("size", 0) for stats in cache_stats.values())),
+            "cache_instances": list(cache_stats.keys())
+        }
+    }
+
+@model_router.post("/cache/clear")
+async def clear_cache(cache_name: Optional[str] = None):
+    """Clear the route cache, either completely or for a specific instance."""
+    if not hasattr(app.state, "route_cache") or not app.state.route_cache:
+        raise HTTPException(status_code=404, detail="Route cache is not enabled")
+    
+    from app.services.storage.route_cache import RouteCacheManager
+    
+    if cache_name:
+        # Check if the named cache exists
+        stats = await RouteCacheManager.get_all_stats()
+        if cache_name not in stats:
+            raise HTTPException(status_code=404, detail=f"Cache instance '{cache_name}' not found")
+        
+        # Clear the specific cache
+        cache = await RouteCacheManager.get_cache(name=cache_name)
+        await cache.clear()
+        return {"status": "success", "message": f"Cache '{cache_name}' cleared successfully"}
+    else:
+        # Clear all caches
+        await RouteCacheManager.clear_all()
+        return {"status": "success", "message": "All cache instances cleared successfully"}
 
 app.include_router(model_router, prefix="/admin", tags=["Models"])
 
