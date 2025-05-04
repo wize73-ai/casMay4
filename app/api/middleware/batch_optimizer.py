@@ -334,7 +334,7 @@ class BatchOptimizer:
             logger.warning(f"Error calculating group key: {str(e)}")
             return f"random_{str(uuid.uuid4())}"
     
-    async def process(self, item_data: Any, group_key: Optional[str] = None, timeout_seconds: float = 30.0) -> Any:
+    async def process(self, item_data: Any, group_key: Optional[str] = None, timeout_seconds: float = 5.0) -> Any:
         """
         Process a single item, potentially as part of a batch.
         

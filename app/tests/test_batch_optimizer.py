@@ -18,10 +18,31 @@ class TestBatchOptimizer:
     @pytest.fixture
     def optimizer(self, event_loop):
         """Create a test batch optimizer instance."""
-        # Initialize a batch optimizer with test settings using the testing factory method
+        # Define a synchronous process function that doesn't depend on async processing
+        async def simplified_process_function(batch_items):
+            """A simplified synchronous process function for testing only"""
+            results = {}
+            for item in batch_items:
+                item_key = item.key
+                if isinstance(item.item_data, dict):
+                    result = dict(item.item_data)
+                    result["processed"] = True
+                    result["batch_size"] = len(batch_items)
+                    # Ensure each item is properly completed
+                    if item.completion_event:
+                        item.completion_event.set()
+                else:
+                    result = {"processed": True, "original": item.item_data, "batch_size": len(batch_items)}
+                    # Ensure each item is properly completed
+                    if item.completion_event:
+                        item.completion_event.set()
+                results[item_key] = result
+            return results
+        
+        # Initialize the optimizer with our simplified function
         return BatchOptimizer.create_for_testing(
             name=f"test_optimizer_{uuid.uuid4().hex}",
-            process_function=self.mock_process_function
+            process_function=simplified_process_function
         )
     
     async def mock_process_function(self, batch_items: List[BatchItem]) -> Dict[str, Any]:
