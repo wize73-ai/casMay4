@@ -57,21 +57,21 @@ Runs automated tests for the CasaLingua project.
 - Optional model downloading for more comprehensive tests
 - Model caching for faster test runs
 
-### Label Pull Requests
+### PR Analysis
 
-**File:** `label-prs.yml`
+**File:** `pr-analysis.yml`
 
-Automatically labels pull requests based on their content.
+Analyzes pull requests and adds an informative comment.
 
 **Triggers:**
 - New pull requests to main branch
 - Updates to existing pull requests
 
 **Key Features:**
-- Labels PRs based on keywords in title and description
-- Adds size labels based on number of changes
-- Supports categories for enhancements, bugs, documentation, etc.
-- Adds specific labels for translation and anonymization PRs
+- Detects PR categories based on keywords in title and description
+- Determines PR size based on number of changes
+- Adds a detailed analysis comment to the PR
+- Provides information about changes and automated test status
 
 ## Usage
 
