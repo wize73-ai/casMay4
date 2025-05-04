@@ -16,6 +16,7 @@ class TranslationRequest(BaseModel):
     glossary_id: Optional[str] = None
     verify: Optional[bool] = False
     formality: Optional[str] = None
+    parameters: Optional[dict] = None  # Additional parameters for the translation model
 
 
 # BatchTranslationRequest schema for batch translation endpoint
@@ -38,18 +39,21 @@ class DocumentTranslationRequest(BaseModel):
 
 
 class TranslationResult(BaseModel):
-    source_text: str
+    source_text: str = ""  # Default value to avoid validation issues
     translated_text: str
-    source_language: str
+    source_language: str = "auto"  # Default value
     target_language: str
-    confidence: Optional[float]
-    model_id: str
-    process_time: float
-    word_count: int
-    character_count: int
-    detected_language: Optional[str]
-    verified: Optional[bool]
-    verification_score: Optional[float]
+    confidence: Optional[float] = 0.0
+    model_id: str = "default"
+    process_time: float = 0.0
+    word_count: int = 0
+    character_count: int = 0
+    detected_language: Optional[str] = None
+    verified: Optional[bool] = False
+    verification_score: Optional[float] = None
+    model_used: Optional[str] = "translation"
+    used_fallback: Optional[bool] = False
+    fallback_model: Optional[str] = None
 
 class TranslationResponse(BaseResponse[TranslationResult]):
     pass
