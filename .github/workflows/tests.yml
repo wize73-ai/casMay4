@@ -75,15 +75,13 @@ jobs:
     - name: Run basic tests
       run: |
         # Run the test_changes.py script with minimal dependencies
-        python -c "
-import sys
+        python -c "import sys
 print(f'Python version: {sys.version}')
 import numpy as np
 print(f'NumPy version: {np.__version__}')
 import logging
 logging.basicConfig(level=logging.INFO)
-logging.info('Running with minimal dependencies for testing')
-        "
+logging.info('Running with minimal dependencies for testing')"
         
         # For Python 3.8 we'll run a minimal test of just the MBART language codes
         if [ "${{ matrix.python-version }}" = "3.8" ]; then
