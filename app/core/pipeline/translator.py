@@ -70,6 +70,62 @@ class TranslationPipeline:
             "th": "Thai"
         }
         
+        # MBART language code mapping (ISO 639-1 to MBART format)
+        self.mbart_language_codes = {
+            "ar": "ar_AR",
+            "cs": "cs_CZ",
+            "de": "de_DE",
+            "en": "en_XX",
+            "es": "es_XX",
+            "et": "et_EE",
+            "fi": "fi_FI",
+            "fr": "fr_XX",
+            "gu": "gu_IN",
+            "hi": "hi_IN",
+            "it": "it_IT",
+            "ja": "ja_XX",
+            "kk": "kk_KZ",
+            "ko": "ko_KR",
+            "lt": "lt_LT",
+            "lv": "lv_LV",
+            "my": "my_MM",
+            "ne": "ne_NP",
+            "nl": "nl_XX",
+            "ro": "ro_RO",
+            "ru": "ru_RU",
+            "si": "si_LK",
+            "tr": "tr_TR",
+            "vi": "vi_VN",
+            "zh": "zh_CN",
+            "af": "af_ZA",
+            "az": "az_AZ",
+            "bn": "bn_IN",
+            "fa": "fa_IR",
+            "he": "he_IL",
+            "hr": "hr_HR",
+            "id": "id_ID",
+            "ka": "ka_GE",
+            "km": "km_KH",
+            "mk": "mk_MK",
+            "ml": "ml_IN",
+            "mn": "mn_MN",
+            "mr": "mr_IN",
+            "pl": "pl_PL",
+            "ps": "ps_AF",
+            "pt": "pt_XX",
+            "sv": "sv_SE",
+            "sw": "sw_KE",
+            "ta": "ta_IN",
+            "te": "te_IN",
+            "th": "th_TH",
+            "tl": "tl_XX",
+            "uk": "uk_UA",
+            "ur": "ur_PK",
+            "xh": "xh_ZA",
+            "gl": "gl_ES",
+            "sl": "sl_SI"
+        }
+        
         # Default model types
         self.translation_model_type = "translation"
         self.language_detection_model_type = "language_detection"
@@ -223,7 +279,17 @@ class TranslationPipeline:
         
         try:
             # Get model ID if specified
-            model_id = request.model_id or self.translation_model_type
+            model_id = request.model_name or self.translation_model_type
+            
+            # Convert language codes to MBART format if using Facebook MBART model
+            mbart_source_lang = None
+            mbart_target_lang = None
+            
+            if "mbart" in model_id.lower():
+                # For MBART models, we need to use their special language code format
+                mbart_source_lang = self._get_mbart_language_code(source_language)
+                mbart_target_lang = self._get_mbart_language_code(target_language)
+                logger.debug(f"Using MBART language codes: {mbart_source_lang} -> {mbart_target_lang}")
             
             # Prepare translation input
             input_data = {
@@ -237,6 +303,11 @@ class TranslationPipeline:
                     "glossary_id": request.glossary_id
                 }
             }
+            
+            # Add MBART-specific language codes if applicable
+            if mbart_source_lang and mbart_target_lang:
+                input_data["parameters"]["mbart_source_lang"] = mbart_source_lang
+                input_data["parameters"]["mbart_target_lang"] = mbart_target_lang
             
             # Add context if provided
             if request.context:
@@ -308,6 +379,23 @@ class TranslationPipeline:
             logger.error(f"Translation error: {str(e)}", exc_info=True)
             raise
     
+    def _get_mbart_language_code(self, language_code: str) -> str:
+        """
+        Convert ISO 639-1 language code to MBART-specific format.
+        
+        Args:
+            language_code: ISO 639-1 language code (e.g., 'en', 'es')
+            
+        Returns:
+            MBART format language code (e.g., 'en_XX', 'es_XX')
+        """
+        # If language code is not specified or not in the mapping, use English as default
+        if not language_code or language_code not in self.mbart_language_codes:
+            logger.warning(f"Language code '{language_code}' not found in MBART mapping, using English (en_XX)")
+            return "en_XX"
+            
+        return self.mbart_language_codes[language_code]
+    
     async def translate_text(
         self,
         text: str,
@@ -344,7 +432,7 @@ class TranslationPipeline:
             text=text,
             source_language=source_language,
             target_language=target_language,
-            model_id=model_id,
+            model_name=model_id,  # Using model_name instead of model_id to match schema
             glossary_id=glossary_id,
             preserve_formatting=preserve_formatting,
             formality=formality,

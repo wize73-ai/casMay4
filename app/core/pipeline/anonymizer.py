@@ -774,7 +774,13 @@ class AnonymizationPipeline:
         # Add common patterns that work across languages
         patterns.update(self.common_patterns)
         
-        # Add language-specific patterns
+        # Get additional patterns from the comprehensive pattern collection
+        additional_patterns = self._get_patterns_for_language(language)
+        for entity_type, pattern in additional_patterns.items():
+            if entity_type not in patterns:
+                patterns[entity_type] = pattern
+        
+        # Add language-specific patterns with more comprehensive coverage
         if language == "en":
             # US Phone numbers
             patterns[EntityType.PHONE] = re.compile(r'\b(?:\+\d{1,2}\s?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}\b')
@@ -786,7 +792,19 @@ class AnonymizationPipeline:
             patterns[EntityType.ADDRESS] = re.compile(r'\b\d+\s+[A-Za-z0-9\s,]+(Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Place|Pl|Court|Ct|Way|Terrace|Ter)[\s,]+[A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\b', re.IGNORECASE)
             
             # Dates (multiple formats)
-            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Septembre|Octobre|Novembre|Décembre) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
+            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
+            
+            # Credit card numbers
+            patterns[EntityType.CREDIT_CARD] = re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b')
+            
+            # URLs
+            patterns[EntityType.URL] = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[/\w\.-]*\??[-\w=&]+')
+            
+            # IP addresses
+            patterns[EntityType.IP_ADDRESS] = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
+            
+            # Email addresses
+            patterns[EntityType.EMAIL] = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
             
         elif language == "de":
             # German phone numbers
@@ -794,6 +812,26 @@ class AnonymizationPipeline:
             
             # German dates
             patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
+            
+            # German ID cards (Personalausweis)
+            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[A-Z]{2}[0-9]{7}(?:\s?[0-9])?D?<<[0-9]{7}[0-9]\b')
+            
+        elif language == "es":
+            # Spanish national ID (DNI)
+            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[0-9XYZ][0-9]{7}[A-Z]\b')
+            
+            # Spanish phone numbers
+            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+34\s?)?(?:6\d{2}|7[1-9]\d)[\s.-]?\d{2}[\s.-]?\d{2}[\s.-]?\d{2}\b')
+            
+            # Spanish dates
+            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|(?:Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
+            
+        elif language == "fr":
+            # French social security number
+            patterns[EntityType.ID_NUMBER] = re.compile(r'\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b')
+            
+            # French phone numbers
+            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}\b')
         
         # Store for future use
         self.language_patterns[language] = patterns
@@ -859,39 +897,163 @@ class AnonymizationPipeline:
         
         return "male"  # Default to male if no female indicators
     
-    # Placeholder methods for generating fake data
-    # In a real implementation, these would use more sophisticated methods
-    # or libraries like Faker
-    
+    # Comprehensive methods for generating realistic fake data
     def _get_random_name(self, gender: str = "male") -> str:
-        """Generate a random name."""
-        male_names = ["John Smith", "Michael Johnson", "David Brown", "Robert Davis"]
-        female_names = ["Mary Smith", "Jennifer Johnson", "Linda Brown", "Elizabeth Davis"]
+        """
+        Generate a realistic random name based on gender.
         
+        Args:
+            gender: The gender to generate a name for ("male", "female", or None)
+            
+        Returns:
+            A realistic random name
+        """
+        # Large dictionary of common names by gender
+        male_first_names = [
+            "James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph",
+            "Thomas", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Donald", "Steven",
+            "Andrew", "Paul", "Joshua", "Kenneth", "Kevin", "Brian", "George", "Timothy",
+            "Ronald", "Jason", "Edward", "Jeffrey", "Ryan", "Jacob", "Gary", "Nicholas",
+            "Eric", "Jonathan", "Stephen", "Larry", "Justin", "Scott", "Brandon", "Benjamin",
+            "Samuel", "Gregory", "Alexander", "Frank", "Patrick", "Raymond", "Jack", "Dennis"
+        ]
+        
+        female_first_names = [
+            "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth", "Barbara", "Susan", "Jessica",
+            "Sarah", "Karen", "Lisa", "Nancy", "Betty", "Margaret", "Sandra", "Ashley",
+            "Dorothy", "Kimberly", "Emily", "Donna", "Michelle", "Carol", "Amanda", "Melissa",
+            "Deborah", "Stephanie", "Rebecca", "Laura", "Sharon", "Cynthia", "Kathleen", "Amy",
+            "Angela", "Shirley", "Anna", "Ruth", "Brenda", "Pamela", "Nicole", "Katherine",
+            "Samantha", "Christine", "Emma", "Catherine", "Debra", "Virginia", "Rachel", "Carolyn"
+        ]
+        
+        last_names = [
+            "Smith", "Johnson", "Williams", "Jones", "Brown", "Davis", "Miller", "Wilson",
+            "Moore", "Taylor", "Anderson", "Thomas", "Jackson", "White", "Harris", "Martin",
+            "Thompson", "Garcia", "Martinez", "Robinson", "Clark", "Rodriguez", "Lewis", "Lee",
+            "Walker", "Hall", "Allen", "Young", "Hernandez", "King", "Wright", "Lopez",
+            "Hill", "Scott", "Green", "Adams", "Baker", "Gonzalez", "Nelson", "Carter",
+            "Mitchell", "Perez", "Roberts", "Turner", "Phillips", "Campbell", "Parker", "Evans"
+        ]
+        
+        # Select appropriate name by gender
         if gender == "female":
-            return female_names[uuid.uuid4().int % len(female_names)]
+            first_name = female_first_names[self._deterministic_random(len(female_first_names))]
         else:
-            return male_names[uuid.uuid4().int % len(male_names)]
+            first_name = male_first_names[self._deterministic_random(len(male_first_names))]
+            
+        last_name = last_names[self._deterministic_random(len(last_names))]
+        
+        return f"{first_name} {last_name}"
     
     def _get_random_location(self) -> str:
-        """Generate a random location name."""
-        locations = ["Springfield", "Riverdale", "Fairview", "Centerville", "Lakeside", "Mountainview"]
-        return locations[uuid.uuid4().int % len(locations)]
+        """
+        Generate a realistic random city name.
+        
+        Returns:
+            A random city name
+        """
+        cities = [
+            "New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia",
+            "San Antonio", "San Diego", "Dallas", "San Jose", "Austin", "Jacksonville",
+            "Fort Worth", "Columbus", "San Francisco", "Charlotte", "Indianapolis", "Seattle",
+            "Denver", "Washington", "Boston", "El Paso", "Nashville", "Portland", "Oklahoma City",
+            "Las Vegas", "Detroit", "Memphis", "Louisville", "Baltimore", "Milwaukee", "Albuquerque",
+            "Tucson", "Fresno", "Sacramento", "Mesa", "Kansas City", "Atlanta", "Omaha", "Colorado Springs",
+            "Raleigh", "Miami", "Long Beach", "Virginia Beach", "Oakland", "Minneapolis", "Tampa", "Arlington"
+        ]
+        
+        return cities[self._deterministic_random(len(cities))]
     
     def _get_random_organization(self) -> str:
-        """Generate a random organization name."""
-        prefixes = ["Global", "National", "United", "Advanced", "Pacific", "Superior"]
-        suffixes = ["Corporation", "Associates", "Industries", "Solutions", "Technologies", "Systems"]
+        """
+        Generate a realistic random organization name.
         
-        prefix = prefixes[uuid.uuid4().int % len(prefixes)]
-        suffix = suffixes[uuid.uuid4().int % len(suffixes)]
+        Returns:
+            A random company/organization name
+        """
+        prefixes = [
+            "Global", "National", "United", "International", "Advanced", "Pacific", "Superior",
+            "Elite", "Premium", "Precision", "Strategic", "Dynamic", "Innovative", "Integrated",
+            "Digital", "Universal", "Premier", "Apex", "Quantum", "Synergy", "Nexus", "Atlas",
+            "Pinnacle", "Vanguard", "Horizon", "Sentinel", "Sterling", "Prestige", "Paramount"
+        ]
         
-        return f"{prefix} {suffix}"
+        midsections = [
+            "Tech", "Data", "Health", "Financial", "Energy", "Communications", "Logistics",
+            "Aerospace", "Development", "Research", "Investment", "Media", "Transport", "Security",
+            "Medical", "Engineering", "Construction", "", "", "", "", "", "", ""  # Empty strings increase chance of 2-part names
+        ]
+        
+        suffixes = [
+            "Corporation", "Associates", "Industries", "Solutions", "Technologies", "Systems",
+            "Group", "Partners", "Enterprises", "International", "Inc", "LLC", "Ltd", "Co",
+            "Services", "Innovations", "Consultants", "Ventures", "Holdings", "Networks", "Dynamics"
+        ]
+        
+        prefix = prefixes[self._deterministic_random(len(prefixes))]
+        midsection = midsections[self._deterministic_random(len(midsections))]
+        suffix = suffixes[self._deterministic_random(len(suffixes))]
+        
+        # Format based on whether a midsection is included
+        if midsection:
+            return f"{prefix} {midsection} {suffix}"
+        else:
+            return f"{prefix} {suffix}"
     
     def _get_random_street(self) -> str:
-        """Generate a random street name."""
-        streets = ["Main", "Oak", "Maple", "Cedar", "Pine", "Elm", "Washington", "Park"]
-        return streets[uuid.uuid4().int % len(streets)]
+        """
+        Generate a realistic random street address.
+        
+        Returns:
+            A random street address
+        """
+        number = self._deterministic_random(1000) + 1
+        
+        street_names = [
+            "Main", "Oak", "Maple", "Cedar", "Pine", "Elm", "Washington", "Park",
+            "Lake", "Hill", "River", "View", "Highland", "Forest", "Sunset", "Ridge",
+            "Willow", "Meadow", "Church", "Center", "Broad", "Mill", "Broadway", "Market",
+            "Spring", "Front", "Water", "Union", "South", "North", "East", "West",
+            "Franklin", "Jefferson", "Madison", "Adams", "Jackson", "Lincoln", "Wilson"
+        ]
+        
+        street_types = [
+            "Street", "Avenue", "Boulevard", "Drive", "Lane", "Road", "Place", "Court",
+            "Circle", "Way", "Parkway", "Terrace", "Plaza", "Trail", "Crossing"
+        ]
+        
+        street_name = street_names[self._deterministic_random(len(street_names))]
+        street_type = street_types[self._deterministic_random(len(street_types))]
+        
+        return f"{number} {street_name} {street_type}"
+    
+    def _deterministic_random(self, max_value: int, seed_text: str = None) -> int:
+        """
+        Generate a deterministic random number based on the hash of the entity.
+        This ensures consistent replacements for the same entities.
+        
+        Args:
+            max_value: Maximum value (exclusive)
+            seed_text: Optional text to use as seed for deterministic generation
+            
+        Returns:
+            Random integer between 0 and max_value-1
+        """
+        if seed_text is None:
+            # If no seed text is provided, use instance id + counter as a pseudo-random source
+            if not hasattr(self, '_random_counter'):
+                self._random_counter = 0
+            self._random_counter += 1
+            seed_text = f"{id(self)}_{self._random_counter}"
+        
+        # Use hashlib to create a deterministic hash from the seed text
+        import hashlib
+        hash_obj = hashlib.md5(seed_text.encode('utf-8'))
+        hash_value = int(hash_obj.hexdigest(), 16)
+        
+        # Convert the hash to a value within the desired range
+        return hash_value % max_value
     
     def _get_patterns_for_language(self, language="en"):
         """Get regex patterns for entity types in the specified language."""

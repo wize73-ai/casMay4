@@ -33,10 +33,10 @@ from colorama import init as colorama_init, Fore, Style
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.utils.config import load_config
-from app.utils.logging import setup_logging
+from app.utils.logging import configure_logging, get_logger
 
 # Configure logging
-logger = logging.getLogger("casalingua.tools.download_models")
+logger = get_logger("tools.download_models")
 
 # Model definitions with metadata
 DEFAULT_MODELS = {
@@ -54,32 +54,32 @@ DEFAULT_MODELS = {
         "gpu_memory_required": 0.5,
         "model_format": "transformers"
     },
-    "translation_en_es": {
-        "name": "English-Spanish Translation",
-        "model_name": "Helsinki-NLP/opus-mt-en-es",
+    "translation_model": {
+        "name": "Multilingual Translation",
+        "model_name": "facebook/mbart-large-50-many-to-many-mmt",
         "model_type": "seq2seq",
-        "tokenizer_name": "Helsinki-NLP/opus-mt-en-es",
-        "size_gb": 0.25,
-        "languages": ["en", "es"],
+        "tokenizer_name": "facebook/mbart-large-50-many-to-many-mmt",
+        "size_gb": 2.3,
+        "languages": ["en", "es", "fr", "de", "ru", "zh", "ja", "pt", "it", "ar", "hi", "vi"],
         "tasks": ["translation"],
-        "description": "English to Spanish machine translation model",
+        "description": "Multilingual translation model (MBART-50) for 50 languages",
         "requires_gpu": False,
-        "memory_required": 1.5,
-        "gpu_memory_required": 1.0,
+        "memory_required": 4.0,
+        "gpu_memory_required": 3.0,
         "model_format": "transformers"
     },
-    "translation_es_en": {
-        "name": "Spanish-English Translation",
-        "model_name": "Helsinki-NLP/opus-mt-es-en",
+    "translation_small": {
+        "name": "Multilingual Translation (Small)",
+        "model_name": "facebook/mbart-large-50-one-to-many-mmt",
         "model_type": "seq2seq",
-        "tokenizer_name": "Helsinki-NLP/opus-mt-es-en",
-        "size_gb": 0.25,
-        "languages": ["es", "en"],
+        "tokenizer_name": "facebook/mbart-large-50-one-to-many-mmt",
+        "size_gb": 1.2,
+        "languages": ["en", "es", "fr", "de", "ru", "zh", "ja", "pt", "it", "ar", "hi", "vi"],
         "tasks": ["translation"],
-        "description": "Spanish to English machine translation model",
+        "description": "Multilingual translation model (MBART-50) optimized for translating from English",
         "requires_gpu": False,
-        "memory_required": 1.5,
-        "gpu_memory_required": 1.0,
+        "memory_required": 2.0,
+        "gpu_memory_required": 1.5,
         "model_format": "transformers"
     },
     "language_detection": {

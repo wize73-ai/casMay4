@@ -9,6 +9,71 @@ Author: Exygy Development Team
 Version: 1.0.0
 License: MIT
 """
+
+# Add the tracking function needed by the streaming API
+async def track_request_metrics(
+    endpoint: str,
+    request_id: str,
+    user_id: str,
+    request_data: dict,
+    start_time: float
+) -> None:
+    """
+    Track request metrics in the background.
+    
+    Args:
+        endpoint: API endpoint path
+        request_id: Unique request identifier
+        user_id: User identifier
+        request_data: Request payload data
+        start_time: Request start time
+    """
+    # Calculate duration
+    duration = time.time() - start_time
+    
+    # Import and use metrics collector
+    from app.utils.logging import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        # Log the metrics
+        logger.info(
+            f"Request metrics: endpoint={endpoint}, user={user_id}, "
+            f"request_id={request_id}, duration={duration:.4f}s"
+        )
+        
+        # Record in metrics collector
+        # Get metrics instance from the global context
+        from app.audit.metrics import MetricsCollector
+        
+        # Get or create metrics collector
+        metrics_collector = MetricsCollector.get_instance()
+        
+        # Record request
+        metrics_collector.record_request(
+            endpoint=endpoint,
+            success=(status_code < 400),
+            duration=duration,
+            status_code=status_code,
+            payload_size=request_size + response_size
+        )
+        
+        # Track additional metrics for specific endpoints
+        if 'translate' in endpoint or 'translation' in endpoint:
+            source_lang = metadata.get('source_language', 'unknown') if metadata else 'unknown'
+            target_lang = metadata.get('target_language', 'unknown') if metadata else 'unknown'
+            
+            metrics_collector.record_language_operation(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                operation='translation',
+                duration=duration,
+                input_size=request_size,
+                output_size=response_size,
+                success=(status_code < 400)
+            )
+    except Exception as e:
+        logger.error(f"Error tracking metrics: {str(e)}")
 import time
 import os
 import json
@@ -34,6 +99,25 @@ class MetricsCollector:
     Collects, aggregates, and reports performance metrics for
     the CasaLingua language processing pipeline.
     """
+    
+    _instance = None
+    _instance_lock = threading.RLock()
+    
+    @classmethod
+    def get_instance(cls, config: Optional[Dict[str, Any]] = None) -> 'MetricsCollector':
+        """
+        Get or create the singleton instance of MetricsCollector.
+        
+        Args:
+            config: Optional configuration to pass when creating the instance
+            
+        Returns:
+            The singleton MetricsCollector instance
+        """
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = cls(config)
+            return cls._instance
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
