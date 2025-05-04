@@ -891,7 +891,21 @@ class AnonymizationPipeline:
     def _get_random_street(self) -> str:
         """Generate a random street name."""
         streets = ["Main", "Oak", "Maple", "Cedar", "Pine", "Elm", "Washington", "Park"]
-        return streets[uuid.uuid4().int % len(streets)] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}(?:st|nd|rd|th)?,? \d{2,4})\b', re.IGNORECASE)
+        return streets[uuid.uuid4().int % len(streets)]
+    
+    def _get_patterns_for_language(self, language="en"):
+        """Get regex patterns for entity types in the specified language."""
+        patterns = {}
+        
+        if language == "en":
+            # English dates
+            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}(?:st|nd|rd|th)?,? \d{2,4})\b', re.IGNORECASE)
+            
+            # English phone numbers
+            patterns[EntityType.PHONE] = re.compile(r'\b(?:\+1\s?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}\b')
+            
+            # Social Security Number
+            patterns[EntityType.ID_NUMBER] = re.compile(r'\b\d{3}[-]?\d{2}[-]?\d{4}\b')
             
         elif language == "es":
             # Spanish phone numbers
@@ -911,4 +925,6 @@ class AnonymizationPipeline:
             patterns[EntityType.ID_NUMBER] = re.compile(r'\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b')
             
             # French dates
-            patterns[EntityType.DATE]
+            patterns[EntityType.DATE] = re.compile(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Septembre|Octobre|Novembre|Décembre) \d{1,2}(?:,)? \d{2,4})\b', re.IGNORECASE)
+        
+        return patterns
