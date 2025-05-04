@@ -318,6 +318,46 @@ class ModelRegistry:
             List[str]: List of model types
         """
         return list(self.registry.keys())
+        
+    def get_registry_summary(self) -> Dict[str, Any]:
+        """
+        Get summary information about the model registry
+        
+        Returns:
+            Dict[str, Any]: Summary information about the model registry
+        """
+        # Count models by type
+        model_types = {}
+        for model_type, config in self.registry.items():
+            # Get framework
+            framework = getattr(config, "framework", "unknown")
+            if framework not in model_types:
+                model_types[framework] = 0
+            model_types[framework] += 1
+        
+        # Get supported languages
+        supported_languages = set()
+        for config in self.registry.values():
+            if hasattr(config, "languages"):
+                supported_languages.update(config.languages)
+        
+        # Get supported tasks
+        supported_tasks = set()
+        for model_type, config in self.registry.items():
+            # Add the model_type itself as a task
+            supported_tasks.add(model_type)
+            # Also add task field if present
+            if hasattr(config, "task") and config.task:
+                supported_tasks.add(config.task)
+        
+        return {
+            "model_counts": {
+                "total": len(self.registry),
+                "by_type": model_types
+            },
+            "supported_languages": list(supported_languages) if supported_languages else ["en"],
+            "supported_tasks": list(supported_tasks)
+        }
 
 class ModelLoader:
     """Handles loading and management of models with hardware awareness"""
