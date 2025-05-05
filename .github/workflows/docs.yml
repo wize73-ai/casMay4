@@ -33,43 +33,43 @@ jobs:
     - name: Generate config if missing
       run: |
         if [ ! -f mkdocs.yml ]; then
-          cat > mkdocs.yml << EOF
-          site_name: CasaLingua Documentation
-          site_description: Language Processing & Translation Pipeline
-          theme:
-            name: material
-            palette:
-              primary: indigo
-              accent: amber
-            features:
-              - navigation.tabs
-              - navigation.sections
-              - navigation.expand
-              - content.code.copy
-          markdown_extensions:
-            - pymdownx.highlight
-            - pymdownx.superfences
-            - pymdownx.inlinehilite
-            - pymdownx.tabbed
-            - pymdownx.critic
-            - pymdownx.tasklist:
-                custom_checkbox: true
-          nav:
-            - Home: 'index.md'
-            - Getting Started: 'getting-started.md'
-            - Configuration:
-              - Overview: 'configuration/README.md'
-              - Database: 'configuration/database.md'
-            - API:
-              - Overview: 'api/README.md'
-              - Translation: 'api/translation.md'
-              - Simplification: 'api/simplification.md'
-              - Language Detection: 'api/language-detection.md'
-            - Architecture: 
-              - Overview: 'architecture/README.md'
-            - Development:
-              - Git Structure: 'development/git_structure.md'
-          EOF
+          cat > mkdocs.yml << 'EOF'
+site_name: CasaLingua Documentation
+site_description: Language Processing & Translation Pipeline
+theme:
+  name: material
+  palette:
+    primary: indigo
+    accent: amber
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed
+  - pymdownx.critic
+  - pymdownx.tasklist:
+      custom_checkbox: true
+nav:
+  - Home: 'index.md'
+  - Getting Started: 'getting-started.md'
+  - Configuration:
+    - Overview: 'configuration/README.md'
+    - Database: 'configuration/database.md'
+  - API:
+    - Overview: 'api/README.md'
+    - Translation: 'api/translation.md'
+    - Simplification: 'api/simplification.md'
+    - Language Detection: 'api/language-detection.md'
+  - Architecture: 
+    - Overview: 'architecture/README.md'
+  - Development:
+    - Git Structure: 'development/git_structure.md'
+EOF
         fi
         
     - name: Prepare docs directory
