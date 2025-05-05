@@ -1,0 +1,60 @@
+name: Model Verification
+
+on:
+  # Run weekly to verify models are still accessible
+  schedule:
+    - cron: '0 0 * * 0'  # Every Sunday at midnight
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  verify-models:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Create required directories
+      run: |
+        mkdir -p models cache
+        
+    - name: Test model availability
+      run: |
+        python scripts/download_models.py --check-only
+        
+    - name: Send notification on failure
+      if: failure()
+      uses: slackapi/slack-github-action@v1.23.0
+      with:
+        payload: |
+          {
+            "text": "⚠️ Model verification failed! Check model availability in CasaLingua repository.",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "⚠️ *Model Verification Failed*\nSome language models may no longer be accessible."
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "Please check the <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|workflow run> for details."
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

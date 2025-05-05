@@ -34,7 +34,7 @@ CasaLingua is a comprehensive language translation and processing platform desig
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/exygy/casalingua.git
+   git clone git@github.com:wize73-ai/casMay4.git
    cd casalingua
    ```
 

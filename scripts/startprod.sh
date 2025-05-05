@@ -7,36 +7,79 @@
 
 set -e  # Exit on error
 
-# Color codes for pretty output
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# Force color output
+export FORCE_COLOR=1
 
-# ASCII Art Logo Banner with CasaLingua wordmark and Mac M4 chip icon
+# Color codes for pretty output using tput (more compatible)
+GREEN=$(tput setaf 2 2>/dev/null || echo '')
+BLUE=$(tput setaf 4 2>/dev/null || echo '')
+RED=$(tput setaf 1 2>/dev/null || echo '')
+YELLOW=$(tput setaf 3 2>/dev/null || echo '')
+BOLD=$(tput bold 2>/dev/null || echo '')
+NC=$(tput sgr0 2>/dev/null || echo '') # Reset
+
+# Styled Banner with Box Drawing Characters
+clear
+
+# Box drawing chars
+TL="╔"
+TR="╗"
+BL="╚"
+BR="╝"
+HORIZ="═"
+VERT="║"
+
+# Get terminal width
+term_width=$(tput cols)
+if [ $term_width -gt 100 ]; then
+    term_width=100
+fi
+
+# Calculate banner width
+banner_width=$((term_width - 4))
+
+# Create horizontal line
+horiz_line=""
+for ((i=0; i<banner_width; i++)); do
+    horiz_line="${horiz_line}${HORIZ}"
+done
+
+# Create empty line
+empty_line="${VERT}$(printf "%${banner_width}s")${VERT}"
+
+# Print banner top border
+echo -e "\n${TL}${horiz_line}${TR}"
+
+# Print empty line
+echo -e "${empty_line}"
+
+# Print logo
 echo -e "${BLUE}"
-echo "  ____                 _       _                 _            "
-echo " / ___|___  _ __  ___ | | __ _| |_ ___  _ __ ___| | ___  ___  "
-echo "| |   / _ \| '_ \/ __|| |/ _\` | __/ _ \| '__/ _ \ |/ _ \/ __| "
-echo "| |__| (_) | | | \__ \| | (_| | || (_) | | |  __/ |  __/\__ \ "
-echo " \____\___/|_| |_|___/|_|\__,_|\__\___/|_|  \___|_|\___||___/ "
-echo "                                                              "
-echo "      _____  __  __    __  __      _      ____   _            "
-echo "     |  __ \|  \/  |  |  \/  |    / \    |  _ \ / |           "
-echo "     | |  | | |\/| |  | |\/| |   / _ \   | |_) || |           "
-echo "     | |__| | |  | |  | |  | |  / ___ \  |  __/ | |           "
-echo "     |_____/|_|  |_|  |_|  |_| /_/   \_\ |_|    |_|           "
-echo "                                                              "
-echo "      Mac M4 Chip Icon:                                         "
-echo "       _______                                                 "
-echo "      /       \                                                "
-echo "     |  (o) (o) |                                               "
-echo "     |     ^    |                                               "
-echo "     |   '-'    |                                               "
-echo "      \_______/                                                "
-echo -e "${NC}"
+echo -e "${VERT}   ${BLUE}   _____                _      _                          ${NC}                                   ${VERT}"
+echo -e "${VERT}   ${BLUE}  / ____|              | |    (_)                         ${NC}                                   ${VERT}"
+echo -e "${VERT}   ${BLUE} | |     __ _ ___  __ _| |     _ _ __   __ _ _   _  __ _  ${NC}                                   ${VERT}"
+echo -e "${VERT}   ${BLUE} | |    / _\` / __| / _\` | |    | | '_ \\ / _\` | | | |/ _\` | ${NC}                                   ${VERT}"
+echo -e "${VERT}   ${BLUE} | |___| (_| \\__ \\ (_| | |____| | | | | (_| | |_| | (_| | ${NC}                                   ${VERT}"
+echo -e "${VERT}   ${BLUE}  \\_____\\__,_|___/\\__,_|______|_|_| |_|\\__, |\\__,_|\\__,_| ${NC}                                   ${VERT}"
+echo -e "${VERT}   ${BLUE}                                        |___/             ${NC}                                   ${VERT}"
+
+# Print empty line
+echo -e "${empty_line}"
+
+# Print subtitle
+subtitle="PRODUCTION Mode Server"
+subtitle_len=${#subtitle}
+padding=$((banner_width - subtitle_len - 6))
+padding_spaces=$(printf "%${padding}s")
+echo -e "${VERT}   ${RED}${subtitle}${padding_spaces}${NC}   ${VERT}"
+
+# Print empty line
+echo -e "${empty_line}"
+
+# Print bottom border
+echo -e "${BL}${horiz_line}${BR}\n"
+
+echo -e "${BOLD}${YELLOW}⚠️  PRODUCTION MODE - ENSURE ALL SETTINGS ARE CORRECT ⚠️${NC}"
 
 # Default values for server configuration
 PORT=8000

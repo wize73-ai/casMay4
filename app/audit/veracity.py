@@ -736,6 +736,244 @@ class VeracityAuditor:
                 stats["issue_counts"][issue_type] = 0
             stats["issue_counts"][issue_type] += 1
             
+    async def check(
+        self,
+        content: str,
+        processed_text: str,
+        options: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Generic verification method for any text processing operation.
+        
+        This method serves as an adapter that routes verification to the appropriate
+        specialized verification method based on the operation type.
+        
+        Args:
+            content: Original content (source text)
+            processed_text: Processed text (translation or simplification)
+            options: Processing options including:
+                - source_language: Source language code
+                - target_language: Target language code (for translation)
+                - operation: Type of operation ('translation', 'simplification', etc.)
+                
+        Returns:
+            Dictionary with verification results
+        """
+        if not self.enabled:
+            return {
+                "verified": True,
+                "score": 1.0,
+                "confidence": 1.0,
+                "issues": []
+            }
+            
+        # Get operation type (default to translation if not specified)
+        operation = options.get("operation", "translation")
+        
+        # Check if this is a simplification operation
+        if operation == "simplification" or options.get("simplify", False):
+            return await self._verify_simplification(
+                content, 
+                processed_text, 
+                options.get("source_language", "en"),
+                options
+            )
+        else:
+            # Default to translation verification
+            source_lang = options.get("source_language", "en")
+            target_lang = options.get("target_language", source_lang)
+            
+            return await self.verify_translation(
+                content,
+                processed_text,
+                source_lang,
+                target_lang,
+                options
+            )
+    
+    async def _verify_simplification(
+        self,
+        original_text: str,
+        simplified_text: str,
+        language: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Verify the quality and appropriateness of text simplification.
+        
+        Args:
+            original_text: Original complex text
+            simplified_text: Simplified text
+            language: Language code
+            metadata: Additional metadata
+            
+        Returns:
+            Dictionary with verification results
+        """
+        logger.debug(f"Verifying simplification in {language}")
+        start_time = time.time()
+        
+        # Initialize result structure
+        result = {
+            "verified": False,
+            "score": 0.0,
+            "confidence": 0.0,
+            "issues": [],
+            "metrics": {}
+        }
+        
+        try:
+            # Basic validation - similar to translation but with simplification-specific checks
+            # Check for empty output
+            if not simplified_text.strip():
+                result["issues"].append({
+                    "type": "empty_simplification",
+                    "severity": "critical",
+                    "message": "Simplified text is empty"
+                })
+                return result
+                
+            # Check for identical content
+            if original_text.strip() == simplified_text.strip():
+                result["issues"].append({
+                    "type": "no_simplification",
+                    "severity": "warning",
+                    "message": "Simplified text is identical to original text"
+                })
+                
+            # Calculate length metrics
+            original_words = len(original_text.split())
+            simplified_words = len(simplified_text.split())
+            word_ratio = simplified_words / max(1, original_words)
+            
+            result["metrics"]["word_count_original"] = original_words
+            result["metrics"]["word_count_simplified"] = simplified_words
+            result["metrics"]["word_ratio"] = word_ratio
+            
+            # Check for unreasonable length changes
+            if word_ratio > 1.2:
+                result["issues"].append({
+                    "type": "longer_text",
+                    "severity": "warning",
+                    "message": "Simplified text is significantly longer than original"
+                })
+            
+            # Semantic verification if model manager is available
+            if self.model_manager:
+                # Get embeddings for original and simplified texts
+                original_sample = self._get_text_sample(original_text)
+                simplified_sample = self._get_text_sample(simplified_text)
+                
+                original_embedding = await self.model_manager.create_embeddings(
+                    original_sample, model_key="embedding_model"
+                )
+                simplified_embedding = await self.model_manager.create_embeddings(
+                    simplified_sample, model_key="embedding_model"
+                )
+                
+                # Calculate semantic similarity
+                similarity = self._calculate_similarity(
+                    original_embedding[0], simplified_embedding[0]
+                )
+                
+                result["metrics"]["semantic_similarity"] = float(similarity)
+                
+                # Check for semantic divergence
+                if similarity < 0.7:
+                    result["issues"].append({
+                        "type": "meaning_altered",
+                        "severity": "critical",
+                        "message": "Simplified text may have altered the original meaning",
+                        "similarity": float(similarity)
+                    })
+                elif similarity < 0.85:
+                    result["issues"].append({
+                        "type": "slight_meaning_change",
+                        "severity": "warning",
+                        "message": "Simplified text may have slight differences in meaning",
+                        "similarity": float(similarity)
+                    })
+                
+                # Calculate readability improvement (simple heuristic)
+                # In a production system, we would use language-specific readability metrics
+                avg_word_len_original = sum(len(w) for w in original_text.split()) / max(1, original_words)
+                avg_word_len_simplified = sum(len(w) for w in simplified_text.split()) / max(1, simplified_words)
+                
+                result["metrics"]["avg_word_length_original"] = avg_word_len_original
+                result["metrics"]["avg_word_length_simplified"] = avg_word_len_simplified
+                
+                # Check if simplified text uses simpler words on average
+                if avg_word_len_simplified >= avg_word_len_original:
+                    result["issues"].append({
+                        "type": "no_lexical_simplification",
+                        "severity": "warning",
+                        "message": "Simplified text doesn't use simpler words on average"
+                    })
+                
+                # Calculate sentence length metrics
+                import re
+                original_sentences = re.split(r'[.!?]+', original_text)
+                simplified_sentences = re.split(r'[.!?]+', simplified_text)
+                
+                avg_sent_len_original = original_words / max(1, len(original_sentences))
+                avg_sent_len_simplified = simplified_words / max(1, len(simplified_sentences))
+                
+                result["metrics"]["avg_sentence_length_original"] = avg_sent_len_original
+                result["metrics"]["avg_sentence_length_simplified"] = avg_sent_len_simplified
+                
+                # Check if simplified text uses shorter sentences on average
+                if avg_sent_len_simplified >= avg_sent_len_original:
+                    result["issues"].append({
+                        "type": "no_syntactic_simplification",
+                        "severity": "warning",
+                        "message": "Simplified text doesn't use shorter sentences on average"
+                    })
+                
+                # Calculate overall readability improvement score (0-1)
+                word_length_improvement = max(0, (avg_word_len_original - avg_word_len_simplified) / avg_word_len_original)
+                sentence_length_improvement = max(0, (avg_sent_len_original - avg_sent_len_simplified) / avg_sent_len_original)
+                
+                readability_score = (word_length_improvement + sentence_length_improvement) / 2
+                result["metrics"]["readability_improvement"] = float(readability_score)
+                
+                # Combine metrics for overall score
+                # Weight semantic preservation higher than readability improvement
+                overall_score = (similarity * 0.7) + (readability_score * 0.3)
+                result["score"] = float(overall_score)
+                result["confidence"] = 0.8  # Fixed confidence without reference data
+                
+                # Determine if simplified text passes verification
+                result["verified"] = (
+                    overall_score >= self.threshold and
+                    len([i for i in result["issues"] if i["severity"] == "critical"]) == 0
+                )
+            else:
+                # Without model manager, use basic heuristics only
+                # Assume it's valid if there are no critical issues
+                result["score"] = 0.7
+                result["confidence"] = 0.6
+                result["verified"] = len([i for i in result["issues"] if i["severity"] == "critical"]) == 0
+            
+        except Exception as e:
+            logger.error(f"Error verifying simplification: {str(e)}", exc_info=True)
+            result["issues"].append({
+                "type": "verification_error",
+                "severity": "critical",
+                "message": f"Verification error: {str(e)}"
+            })
+            result["verified"] = False
+            result["score"] = 0.0
+            result["confidence"] = 0.0
+        
+        # Record execution time
+        result["verification_time"] = time.time() - start_time
+        
+        # Add metadata if provided
+        if metadata:
+            result["metadata"] = metadata
+            
+        return result
+    
     def get_quality_statistics(self) -> JSONDict:
         """
         Get quality statistics for all language pairs.

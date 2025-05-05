@@ -172,3 +172,77 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# CasaLingua specific ignores
+# Model directories - contain large binary files
+models/*
+models/translation/*
+models/multipurpose/*
+models/verification/*
+models/tokenizers/*
+models/cache/*
+!models/.gitkeep
+!models/translation/.gitkeep
+!models/multipurpose/.gitkeep
+!models/verification/.gitkeep
+!models/tokenizers/.gitkeep
+
+# Cache directories
+cache/*
+cache/models/*
+cache/api/*
+!cache/.gitkeep
+!cache/models/.gitkeep
+!cache/api/.gitkeep
+
+# Data directories
+data/*
+data/backups/*
+data/documents/*
+!data/.gitkeep
+!data/backups/.gitkeep
+!data/documents/.gitkeep
+
+# Log files
+logs/*
+logs/app/*
+logs/audit/*
+logs/metrics/*
+!logs/.gitkeep
+!logs/app/.gitkeep
+!logs/audit/.gitkeep
+!logs/metrics/.gitkeep
+*.log
+*.jsonl
+
+# Temporary files
+temp/*
+tmp/*
+!temp/.gitkeep
+!tmp/.gitkeep
+*.tmp
+
+# Large index files
+indexes/*
+knowledge_base/*
+!indexes/.gitkeep
+!knowledge_base/.gitkeep
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# VSCode
+.vscode/
+
+# IntelliJ/PyCharm
+.idea/
+
+# Local model registry configuration
+config/model_registry_local.json
+
+# Backup files
+*.bak
+*.backup

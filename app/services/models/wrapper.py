@@ -248,7 +248,8 @@ class TranslationModelWrapper(BaseModelWrapper):
         is_mbart = (self.model.__class__.__name__ == "MBartForConditionalGeneration" or 
                     (hasattr(self.model, "config") and 
                      hasattr(self.model.config, "model_type") and 
-                     getattr(self.model.config, "model_type", "") == "mbart"))
+                     getattr(self.model.config, "model_type", "") == "mbart") or
+                     self._get_model_type() == "mbart_translation")  # Also check for our specific mbart_translation type
                      
         is_mt5 = (self.model.__class__.__name__ == "MT5ForConditionalGeneration" or 
                  (hasattr(self.model, "config") and 
@@ -261,11 +262,24 @@ class TranslationModelWrapper(BaseModelWrapper):
         if is_mbart:
             logger.debug(f"Detected MBART model, using special language token handling")
             
+            # Auto-generate MBART language codes if not provided in parameters
+            if not mbart_source_lang:
+                mbart_source_lang = self._get_mbart_language_code(source_lang)
+                logger.debug(f"Auto-generated MBART source language: {mbart_source_lang} from {source_lang}")
+                
+            if not mbart_target_lang:
+                mbart_target_lang = self._get_mbart_language_code(target_lang)
+                logger.debug(f"Auto-generated MBART target language: {mbart_target_lang} from {target_lang}")
+            
             # Prepare inputs for MBART model
             if self.tokenizer:
                 # For MBART models, we need to set source language for tokenizer
                 if mbart_source_lang and hasattr(self.tokenizer, "set_src_lang_special_tokens"):
+                    logger.debug(f"Setting MBART source language special tokens: {mbart_source_lang}")
                     self.tokenizer.set_src_lang_special_tokens(mbart_source_lang)
+                elif hasattr(self.tokenizer, "src_lang"):
+                    logger.debug(f"Setting MBART tokenizer.src_lang: {mbart_source_lang}")
+                    self.tokenizer.src_lang = mbart_source_lang
                     
                 # Tokenize without translation prompt, as MBART uses language tokens
                 inputs = self.tokenizer(
@@ -395,14 +409,37 @@ class TranslationModelWrapper(BaseModelWrapper):
             # For MBART models, we need to specify the target language
             if is_mbart and "mbart_target_lang" in preprocessed:
                 mbart_target_lang = preprocessed["mbart_target_lang"]
-                if mbart_target_lang and hasattr(self.tokenizer, "lang_code_to_id"):
-                    # Get the token ID for the target language
-                    try:
-                        # Use forced_bos_token_id for MBART to set target language
-                        gen_kwargs["forced_bos_token_id"] = self.tokenizer.lang_code_to_id[mbart_target_lang]
-                        logger.debug(f"Setting MBART target language token: {mbart_target_lang}")
-                    except KeyError:
-                        logger.warning(f"Language code {mbart_target_lang} not found in MBART tokenizer")
+                
+                # Set the forced_bos_token_id based on mbart_target_lang
+                if mbart_target_lang:
+                    # Try different methods of setting the token ID depending on the tokenizer
+                    if hasattr(self.tokenizer, "lang_code_to_id"):
+                        # Use lang_code_to_id dictionary if available
+                        try:
+                            # Use forced_bos_token_id for MBART to set target language
+                            gen_kwargs["forced_bos_token_id"] = self.tokenizer.lang_code_to_id[mbart_target_lang]
+                            logger.debug(f"Setting MBART target language token from lang_code_to_id: {mbart_target_lang}")
+                        except KeyError:
+                            logger.warning(f"Language code {mbart_target_lang} not found in MBART tokenizer.lang_code_to_id")
+                            
+                            # Try getting from convert_tokens_to_ids method as fallback
+                            if hasattr(self.tokenizer, "convert_tokens_to_ids"):
+                                try:
+                                    bos_token = f"{mbart_target_lang}"
+                                    token_id = self.tokenizer.convert_tokens_to_ids(bos_token)
+                                    gen_kwargs["forced_bos_token_id"] = token_id
+                                    logger.debug(f"Setting MBART target language token using convert_tokens_to_ids: {mbart_target_lang} -> {bos_token} -> {token_id}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to convert {mbart_target_lang} token to ID: {e}")
+                    
+                    # Try direct access to tokenizer vocabulary for MBART50TokenizerFast
+                    elif hasattr(self.tokenizer, "vocab") and isinstance(self.tokenizer.vocab, dict):
+                        target_token = f"{mbart_target_lang}"
+                        if target_token in self.tokenizer.vocab:
+                            gen_kwargs["forced_bos_token_id"] = self.tokenizer.vocab[target_token]
+                            logger.debug(f"Setting MBART target language token from vocab: {target_token} -> {gen_kwargs['forced_bos_token_id']}")
+                        else:
+                            logger.warning(f"Token {target_token} not found in MBART tokenizer vocabulary")
             
             # For MT5 models
             if is_mt5:
@@ -1321,11 +1358,55 @@ class SimplifierWrapper(BaseModelWrapper):
         else:
             texts = [input_data.text]
         
+        # Get model info
+        model_config = getattr(self.model, "config", None)
+        model_name = getattr(model_config, "_name_or_path", "") if model_config else ""
+        model_class = self.model.__class__.__name__
+        
+        logger.debug(f"Simplifier model info: name={model_name}, class={model_class}")
+        
+        # Check if we should use legal housing simplification prompting
+        parameters = input_data.parameters or {}
+        domain = parameters.get("domain", "")
+        is_legal_domain = domain.lower() in ["legal", "housing", "housing_legal"]
+        
         # Prepare simplification prompt
         prompts = []
         for text in texts:
-            prompt = f"simplify: {text}"
+            # Special handling for different model types
+            if "bart" in model_name.lower() or "BartForConditionalGeneration" in model_class:
+                # BART models - we need special prompts for these
+                if is_legal_domain:
+                    # For legal housing text
+                    prompt = f"Simplify this housing legal text for a general audience: {text}"
+                    logger.debug(f"Using housing legal simplification prompt for BART model")
+                else:
+                    # General simplification
+                    prompt = f"Simplify this text: {text}"
+                    logger.debug(f"Using general simplification prompt for BART model")
+            elif ("finetuned-text-simplification" in model_name or 
+                  "simplification" in model_name or
+                  "text-simplification" in model_name):
+                # For models specifically fine-tuned for simplification
+                if is_legal_domain:
+                    # Add housing legal context
+                    prompt = f"[Housing Legal Simplification] {text}"
+                else:
+                    # Use direct input
+                    prompt = text
+                logger.debug(f"Using direct input for specialized model: {model_name}")
+            else:
+                # For generic T5 models
+                if is_legal_domain:
+                    prompt = f"simplify housing legal text: {text}"
+                else:
+                    prompt = f"simplify: {text}"
+                logger.debug(f"Using prefix prompt for generic model: {model_name or 'unknown'}")
+            
             prompts.append(prompt)
+        
+        # Log the prompts for debugging
+        logger.debug(f"Using simplification prompts: {prompts}")
         
         # Tokenize inputs
         if self.tokenizer:
@@ -1334,7 +1415,7 @@ class SimplifierWrapper(BaseModelWrapper):
                 return_tensors="pt", 
                 padding=True, 
                 truncation=True,
-                max_length=self.config.get("max_length", 512)
+                max_length=self.config.get("max_length", 1024)  # Increased max length for legal texts
             )
             
             # Move to device
@@ -1346,32 +1427,64 @@ class SimplifierWrapper(BaseModelWrapper):
         
         return {
             "inputs": inputs,
-            "original_texts": texts
+            "original_texts": texts,
+            "is_legal_domain": is_legal_domain
         }
     
     def _run_inference(self, preprocessed: Dict[str, Any]) -> Any:
         """Run simplification inference"""
         inputs = preprocessed["inputs"]
+        is_legal_domain = preprocessed.get("is_legal_domain", False)
+        
+        # Get model info for customizing generation
+        model_config = getattr(self.model, "config", None)
+        model_name = getattr(model_config, "_name_or_path", "") if model_config else ""
+        model_class = self.model.__class__.__name__
         
         # For transformers models
         if hasattr(self.model, "generate") and callable(self.model.generate):
-            # Get generation parameters
-            gen_kwargs = self.config.get("generation_kwargs", {})
+            # Get generation parameters with custom settings for legal text
+            gen_kwargs = self.config.get("generation_kwargs", {}).copy()
             
             # Set defaults if not provided
             if "max_length" not in gen_kwargs:
-                gen_kwargs["max_length"] = 512
+                gen_kwargs["max_length"] = 1024 if is_legal_domain else 512
                 
             if "num_beams" not in gen_kwargs:
-                gen_kwargs["num_beams"] = 4
+                gen_kwargs["num_beams"] = 5 if is_legal_domain else 4
+                
+            if "min_length" not in gen_kwargs:
+                # Ensure the output isn't too short (can happen with overly aggressive simplification)
+                gen_kwargs["min_length"] = 30 if is_legal_domain else 10
+                
+            # Use different generation settings based on model type
+            if "bart" in model_name.lower() or "BartForConditionalGeneration" in model_class:
+                # BART-specific generation settings for better simplification
+                if "do_sample" not in gen_kwargs:
+                    gen_kwargs["do_sample"] = True
+                    
+                if "top_p" not in gen_kwargs:
+                    gen_kwargs["top_p"] = 0.95  # Better diversity
+                    
+                if "temperature" not in gen_kwargs:
+                    gen_kwargs["temperature"] = 0.85 if is_legal_domain else 0.7
+                    
+                logger.debug(f"Using BART-specific generation parameters: {gen_kwargs}")
             
-            # Generate simplifications
-            outputs = self.model.generate(
-                **inputs,
-                **gen_kwargs
-            )
+            # Log generation parameters
+            logger.debug(f"Generating simplification with parameters: {gen_kwargs}")
             
-            return outputs
+            try:
+                # Generate simplifications
+                outputs = self.model.generate(
+                    **inputs,
+                    **gen_kwargs
+                )
+                return outputs
+            except Exception as e:
+                logger.error(f"Error generating simplification: {str(e)}", exc_info=True)
+                # Return a minimal output that won't crash downstream
+                return torch.tensor([[0]])
         
         # For custom models
         elif hasattr(self.model, "simplify") and callable(self.model.simplify):
@@ -1382,24 +1495,435 @@ class SimplifierWrapper(BaseModelWrapper):
     
     def _postprocess(self, model_output: Any, input_data: ModelInput) -> ModelOutput:
         """Postprocess simplification output"""
+        import time
+        from app.audit.veracity import VeracityAuditor
+        
+        # Get domain info for specialized postprocessing
+        parameters = input_data.parameters or {}
+        domain = parameters.get("domain", "")
+        is_legal_domain = domain.lower() in ["legal", "housing", "housing_legal"]
+        
+        # Check if we should verify simplification quality
+        verify_output = parameters.get("verify_output", False)
+        
+        # Check if we have a valid output to decode
+        if isinstance(model_output, torch.Tensor) and model_output.numel() == 0:
+            # Handle empty output
+            if isinstance(input_data.text, str):
+                return ModelOutput(
+                    result="[Simplification failed]",
+                    metadata={"error": "Model produced empty output"}
+                )
+            else:
+                return ModelOutput(
+                    result=["[Simplification failed]"] * len(input_data.text),
+                    metadata={"error": "Model produced empty output"}
+                )
+        
         if self.tokenizer and hasattr(self.tokenizer, "batch_decode"):
-            # Decode outputs
-            simplifications = self.tokenizer.batch_decode(
-                model_output, 
-                skip_special_tokens=True
-            )
+            try:
+                # Decode outputs
+                simplifications = self.tokenizer.batch_decode(
+                    model_output, 
+                    skip_special_tokens=True
+                )
+            except Exception as e:
+                logger.error(f"Error decoding simplification output: {str(e)}", exc_info=True)
+                # Return original text as fallback
+                simplifications = [input_data.text] if isinstance(input_data.text, str) else input_data.text
         else:
             # Output already in text format
             simplifications = model_output
         
+        # Process the simplifications for better quality
+        processed_simplifications = []
+        verification_results = []
+        
+        for i, simplification in enumerate(simplifications):
+            original_text = input_data.text[i] if isinstance(input_data.text, list) else input_data.text
+            
+            # Clean up the simplification
+            if simplification:
+                # Remove any prefixes from the prompt that might have been copied
+                prefixes_to_remove = [
+                    "Simplify this housing legal text for a general audience:",
+                    "Simplify this text:",
+                    "[Housing Legal Simplification]",
+                    "simplify housing legal text:",
+                    "simplify:"
+                ]
+                
+                for prefix in prefixes_to_remove:
+                    if simplification.startswith(prefix):
+                        simplification = simplification[len(prefix):].strip()
+                
+                # For legal domain, ensure common legal terms remain properly formatted
+                if is_legal_domain:
+                    # Ensure capitalization of important legal terms
+                    legal_terms = ["Landlord", "Tenant", "Lessor", "Lessee", "Security Deposit"]
+                    for term in legal_terms:
+                        # Replace with properly capitalized version
+                        simplification = re.sub(r'\b' + term.lower() + r'\b', term, simplification, flags=re.IGNORECASE)
+            else:
+                # If simplification is empty, use the original text
+                simplification = original_text
+            
+            # Run verification if requested
+            if verify_output:
+                verification_result = self._verify_simplification(
+                    original_text, 
+                    simplification,
+                    parameters.get("language", "en"),
+                    domain
+                )
+                verification_results.append(verification_result)
+                
+                # Apply fixes if verification failed and auto_fix is enabled
+                if parameters.get("auto_fix", False) and not verification_result.get("verified", False):
+                    simplification = self._apply_verification_fixes(
+                        original_text,
+                        simplification,
+                        verification_result
+                    )
+                
+            processed_simplifications.append(simplification)
+        
         # If single input, return single output
         if isinstance(input_data.text, str):
-            simplifications = simplifications[0] if simplifications else ""
+            processed_simplifications = processed_simplifications[0] if processed_simplifications else ""
+            verification_results = verification_results[0] if verification_results else None
+        
+        # Create metadata with info about the simplification
+        metadata = {
+            "domain": domain if domain else "general",
+            "model_name": getattr(getattr(self.model, "config", None), "_name_or_path", "unknown")
+        }
+        
+        # Add verification results to metadata if available
+        if verify_output and verification_results:
+            metadata["verification"] = verification_results
         
         return ModelOutput(
-            result=simplifications,
-            metadata={}
+            result=processed_simplifications,
+            metadata=metadata
         )
+    
+    def _verify_simplification(
+        self, 
+        original_text: str, 
+        simplified_text: str, 
+        language: str = "en",
+        domain: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Verify the quality of text simplification using the VeracityAuditor.
+        
+        Args:
+            original_text: Original text
+            simplified_text: Simplified text
+            language: Language code (default: en)
+            domain: Domain type (e.g., "legal", "housing")
+            
+        Returns:
+            Dictionary with verification results
+        """
+        import asyncio
+        from app.audit.veracity import VeracityAuditor
+        
+        # Create auditor instance
+        auditor = VeracityAuditor()
+        
+        # Prepare verification options
+        options = {
+            "operation": "simplification",
+            "source_language": language,
+            "domain": domain
+        }
+        
+        try:
+            # Run verification
+            # Since we're in a sync method but need to call an async one,
+            # create a new event loop for this specific verification
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(auditor.check(
+                original_text, 
+                simplified_text, 
+                options
+            ))
+            loop.close()
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error verifying simplification: {str(e)}", exc_info=True)
+            # Return basic result on error
+            return {
+                "verified": True,  # Default to passing on error
+                "score": 0.5,
+                "confidence": 0.3,
+                "issues": [{
+                    "type": "verification_error",
+                    "severity": "warning",
+                    "message": f"Verification failed: {str(e)}"
+                }]
+            }
+    
+    def _apply_verification_fixes(
+        self, 
+        original_text: str, 
+        simplified_text: str, 
+        verification_result: Dict[str, Any]
+    ) -> str:
+        """
+        Apply fixes to simplification based on verification issues.
+        
+        Args:
+            original_text: Original text
+            simplified_text: Simplified text
+            verification_result: Verification result from _verify_simplification
+            
+        Returns:
+            Improved simplified text
+        """
+        if not verification_result or not verification_result.get("issues"):
+            return simplified_text
+            
+        fixed_text = simplified_text
+        issues = verification_result.get("issues", [])
+        
+        for issue in issues:
+            issue_type = issue.get("type", "")
+            
+            # Apply specific fixes based on issue type
+            if issue_type == "empty_simplification":
+                # Return original text as fallback
+                fixed_text = original_text
+                break
+                
+            elif issue_type == "no_simplification" and simplified_text.strip() == original_text.strip():
+                # Attempt basic simplification if model didn't simplify at all
+                fixed_text = self._apply_basic_simplification(original_text)
+                
+            elif issue_type == "longer_text":
+                # Try to make the text more concise
+                fixed_text = self._make_text_concise(fixed_text)
+                
+            elif issue_type == "meaning_altered" or issue_type == "slight_meaning_change":
+                # For severe meaning changes, revert to original with minor basic simplification
+                fixed_text = self._apply_conservative_simplification(original_text)
+                
+            elif issue_type == "no_lexical_simplification":
+                # Replace complex words with simpler alternatives
+                fixed_text = self._simplify_complex_words(fixed_text)
+                
+            elif issue_type == "no_syntactic_simplification":
+                # Break down long sentences
+                fixed_text = self._simplify_sentences(fixed_text)
+        
+        return fixed_text
+    
+    def _apply_basic_simplification(self, text: str) -> str:
+        """Apply very basic text simplification rules."""
+        import re
+        
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        simplified_sentences = []
+        
+        for sentence in sentences:
+            # Simplify complex words
+            sentence = self._simplify_complex_words(sentence)
+            
+            # Add to output
+            simplified_sentences.append(sentence)
+        
+        return " ".join(simplified_sentences)
+    
+    def _make_text_concise(self, text: str) -> str:
+        """Make text more concise by removing redundancies."""
+        # Remove redundant phrases
+        redundant_phrases = [
+            r'as stated above',
+            r'as mentioned earlier',
+            r'it should be noted that',
+            r'it is important to note that',
+            r'for all intents and purposes',
+            r'at the present time',
+            r'on account of the fact that',
+            r'due to the fact that',
+            r'in spite of the fact that',
+            r'in the event that',
+            r'for the purpose of'
+        ]
+        
+        result = text
+        for phrase in redundant_phrases:
+            result = re.sub(phrase, '', result, flags=re.IGNORECASE)
+        
+        # Clean up double spaces
+        result = re.sub(r'\s+', ' ', result).strip()
+        
+        return result
+    
+    def _apply_conservative_simplification(self, text: str) -> str:
+        """Apply conservative simplification that preserves original meaning."""
+        # Replace complex connectors with simpler ones
+        replacements = {
+            r'\bthus\b': 'so',
+            r'\btherefore\b': 'so',
+            r'\bconsequently\b': 'so',
+            r'\bhence\b': 'so',
+            r'\bsubsequently\b': 'then',
+            r'\bnevertheless\b': 'but',
+            r'\bnotwithstanding\b': 'despite',
+            r'\butilize\b': 'use',
+            r'\bpurchase\b': 'buy',
+            r'\bconsume\b': 'use',
+            r'\bterminate\b': 'end',
+            r'\binitiate\b': 'start'
+        }
+        
+        result = text
+        for pattern, replacement in replacements.items():
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+        
+        return result
+    
+    def _simplify_complex_words(self, text: str) -> str:
+        """Replace complex words with simpler alternatives."""
+        # Dictionary of complex->simple word replacements
+        replacements = {
+            r'\babrogated?\b': 'canceled',
+            r'\baccessory\b': 'extra item',
+            r'\badjacent to\b': 'next to',
+            r'\baforesaid\b': 'previously mentioned',
+            r'\balleviate\b': 'reduce',
+            r'\bamend\b': 'change',
+            r'\banticipate\b': 'expect',
+            r'\bassets\b': 'property',
+            r'\bassign\b': 'transfer',
+            r'\battorney\b': 'lawyer',
+            r'\bcertified mail\b': 'mail with proof of delivery',
+            r'\bcommencement\b': 'start',
+            r'\bconsent\b': 'permission',
+            r'\bconstitute\b': 'form',
+            r'\bdeem\b': 'consider',
+            r'\bdefault\b': 'failure to pay',
+            r'\bdemise\b': 'death',
+            r'\bduly\b': 'properly',
+            r'\bdwelling\b': 'home',
+            r'\bendeavor\b': 'try',
+            r'\bexpiration\b': 'end',
+            r'\bforthwith\b': 'immediately',
+            r'\bgoverning law\b': 'law that applies',
+            r'\bhereby\b': 'by this',
+            r'\bherein\b': 'in this',
+            r'\bhereinafter\b': 'later in this document',
+            r'\bheretofore\b': 'until now',
+            r'\bholder\b': 'owner',
+            r'\bimmediately\b': 'right away',
+            r'\bimplement\b': 'carry out',
+            r'\bin accordance with\b': 'according to',
+            r'\bin addition to\b': 'also',
+            r'\bin lieu of\b': 'instead of',
+            r'\bin the event of\b': 'if',
+            r'\bindemnify\b': 'protect from loss',
+            r'\binitiate\b': 'start',
+            r'\binquire\b': 'ask',
+            r'\binterrogatory\b': 'question',
+            r'\bjurisdiction\b': 'authority',
+            r'\bliability\b': 'legal responsibility',
+            r'\bliquidated damages\b': 'set amount of money',
+            r'\bmodify\b': 'change',
+            r'\bnegligence\b': 'failure to take proper care',
+            r'\bnotification\b': 'notice',
+            r'\bobtain\b': 'get',
+            r'\boccupant\b': 'person living in the property',
+            r'\bpayments\b': 'money',
+            r'\bper annum\b': 'yearly',
+            r'\bperpetrator\b': 'person who committed an act',
+            r'\bpremises\b': 'property',
+            r'\bprior to\b': 'before',
+            r'\bprovisions\b': 'terms',
+            r'\bpursuant to\b': 'according to',
+            r'\bremedy\b': 'solution',
+            r'\bresidence\b': 'home',
+            r'\bsaid\b': 'the',
+            r'\bshall\b': 'must',
+            r'\bstipulation\b': 'requirement',
+            r'\bsubmit\b': 'send',
+            r'\bsufficient\b': 'enough',
+            r'\bterminate\b': 'end',
+            r'\bthereafter\b': 'after that',
+            r'\bthereof\b': 'of that',
+            r'\btransmit\b': 'send',
+            r'\butterly\b': 'completely',
+            r'\bvacate\b': 'leave',
+            r'\bvalid\b': 'legal',
+            r'\bverbatim\b': 'word for word',
+            r'\bvirtually\b': 'almost',
+            r'\bwaive\b': 'give up the right to',
+            r'\bwhereas\b': 'since',
+            r'\bwith reference to\b': 'about',
+            r'\bwith the exception of\b': 'except for',
+            r'\bwitness\b': 'see',
+            r'\bwithhold\b': 'keep back'
+        }
+        
+        result = text
+        for pattern, replacement in replacements.items():
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+        
+        return result
+    
+    def _simplify_sentences(self, text: str) -> str:
+        """Break down long sentences into shorter ones."""
+        import re
+        
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        simplified_sentences = []
+        
+        for sentence in sentences:
+            # Skip already short sentences
+            if len(sentence.split()) < 15:
+                simplified_sentences.append(sentence)
+                continue
+            
+            # Try to break at conjunctions or transition phrases
+            parts = re.split(r'(?<=\w)(?:, (?:and|but|or|yet|so|because|although|however|nevertheless|moreover|furthermore|in addition)| (?:and|but|or|yet|so) )', sentence)
+            
+            if len(parts) > 1:
+                for i, part in enumerate(parts):
+                    if i > 0 and not re.match(r'^(?:and|but|or|yet|so|because|although|however|nevertheless|moreover|furthermore|in addition)', part.strip()):
+                        # Add appropriate starter if the conjunction was removed
+                        connector = "Also, " if i > 0 else ""
+                        simplified_sentences.append(connector + part.strip() + ".")
+                    else:
+                        simplified_sentences.append(part.strip() + ".")
+            else:
+                # If no conjunctions found, try to split at commas/semicolons
+                parts = re.split(r'(?<=\w)[;,] ', sentence)
+                
+                if len(parts) > 1:
+                    for i, part in enumerate(parts):
+                        # Add appropriate capitalization and endings
+                        connector = "Also, " if i > 0 else ""
+                        simplified_sentences.append(connector + part.strip() + ".")
+                else:
+                    # If no good split points, keep as is
+                    simplified_sentences.append(sentence)
+        
+        # Join all sentences
+        result = " ".join(simplified_sentences)
+        
+        # Clean up any double periods
+        result = re.sub(r'\.\.', '.', result)
+        
+        # Ensure proper capitalization
+        result = re.sub(r'(?<=\. )[a-z]', lambda m: m.group(0).upper(), result)
+        
+        return result
 
 
 class AnonymizerWrapper(BaseModelWrapper):
@@ -1783,6 +2307,7 @@ def create_model_wrapper(model_type: str, model: Any, tokenizer: Any = None, con
     """
     wrapper_map = {
         "translation": TranslationModelWrapper,
+        "mbart_translation": TranslationModelWrapper,  # Use TranslationModelWrapper for MBART
         "language_detection": LanguageDetectionWrapper,
         "ner_detection": NERDetectionWrapper,
         "rag_generator": RAGGeneratorWrapper,

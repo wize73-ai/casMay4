@@ -36,28 +36,38 @@ def print_startup_banner(version: str = "1.0.0", cli_mode: bool = False, theme: 
     """
     term_width = min(shutil.get_terminal_size().columns, 100)
     chars = get_theme_chars(theme)
-    banner_width = term_width - 2
+    banner_width = term_width - 4  # Allow for consistent padding
     horiz_line = chars["horiz"] * banner_width
 
+    # Create the banner with proper alignment
     banner = f"\n{chars['tl']}{horiz_line}{chars['tr']}\n"
     empty_line = f"{chars['vert']}{' ' * banner_width}{chars['vert']}\n"
+    
+    # ASCII logo with consistent padding
     banner += empty_line
-    banner += f"{chars['vert']}  {colors.TITLE} ____                _     _{' ' * (banner_width - 23)}{colors.RESET}  {chars['vert']}\n"
-    banner += f"{chars['vert']}  {colors.TITLE}/ ___|__ _ ___  __ _| |   (_)_ __   __ _ _   _  __ _{' ' * (banner_width - 52)}{colors.RESET}  {chars['vert']}\n"
-    banner += f"{chars['vert']}  {colors.TITLE}| |   / _` / __|/ _` | |   | | '_ \\ / _` | | | |/ _` |{' ' * (banner_width - 52)}{colors.RESET}  {chars['vert']}\n"
-    banner += f"{chars['vert']}  {colors.TITLE}| |__| (_| \\__ \\ (_| | |___| | | | | (_| | |_| | (_| |{' ' * (banner_width - 52)}{colors.RESET}  {chars['vert']}\n"
-    banner += f"{chars['vert']}  {colors.TITLE}\\____\\__,_|___/\\__,_|_____|_|_| |_|\\__, |\\__,_|\\__,_|{' ' * (banner_width - 52)}{colors.RESET}  {chars['vert']}\n"
-    banner += f"{chars['vert']}  {colors.TITLE}                                    |___/{' ' * (banner_width - 36)}{colors.RESET}  {chars['vert']}\n"
+    banner += f"{chars['vert']}   {colors.TITLE}   _____                _      _                          {colors.RESET}                                   {chars['vert']}\n"
+    banner += f"{chars['vert']}   {colors.TITLE}  / ____|              | |    (_)                         {colors.RESET}                                   {chars['vert']}\n"
+    banner += f"{chars['vert']}   {colors.TITLE} | |     __ _ ___  __ _| |     _ _ __   __ _ _   _  __ _  {colors.RESET}                                   {chars['vert']}\n"
+    banner += f"{chars['vert']}   {colors.TITLE} | |    / _` / __|/ _` | |    | | '_ \\ / _` | | | |/ _` | {colors.RESET}                                   {chars['vert']}\n"
+    banner += f"{chars['vert']}   {colors.TITLE} | |___| (_| \\__ \\ (_| | |____| | | | | (_| | |_| | (_| | {colors.RESET}                                   {chars['vert']}\n"
+    banner += f"{chars['vert']}   {colors.TITLE}  \\_____\\__,_|___/\\__,_|______|_|_| |_|\\__, |\\__,_|\\__,_| {colors.RESET}                                   {chars['vert']}\n"                             
+    banner += f"{chars['vert']}   {colors.TITLE}                                        |___/             {colors.RESET}                                   {chars['vert']}\n"
     banner += empty_line
+    
+    # Additional information with consistent padding
     subtitle = "Language Processing & Translation Pipeline"
-    banner += f"{chars['vert']}  {colors.SUBTITLE}{subtitle}{' ' * (banner_width - len(subtitle) - 2)}{colors.RESET}  {chars['vert']}\n"
+    subtitle_padding = banner_width - len(subtitle) - 6  # 6 for the padding (3 on each side)
+    banner += f"{chars['vert']}   {colors.SUBTITLE}{subtitle}{' ' * subtitle_padding}{colors.RESET}   {chars['vert']}\n"
+    
     version_str = f"Version: {version}"
-    banner += f"{chars['vert']}  {colors.VALUE}{version_str}{' ' * (banner_width - len(version_str) - 2)}{colors.RESET}  {chars['vert']}\n"
+    version_padding = banner_width - len(version_str) - 6
+    banner += f"{chars['vert']}   {colors.VALUE}{version_str}{' ' * version_padding}{colors.RESET}   {chars['vert']}\n"
 
     # Add mode indicator if in CLI mode
     if cli_mode:
         mode_str = "Mode: CLI Interactive"
-        banner += f"{chars['vert']}  {colors.HIGHLIGHT}{mode_str}{' ' * (banner_width - len(mode_str) - 2)}{colors.RESET}  {chars['vert']}\n"
+        mode_padding = banner_width - len(mode_str) - 6
+        banner += f"{chars['vert']}   {colors.HIGHLIGHT}{mode_str}{' ' * mode_padding}{colors.RESET}   {chars['vert']}\n"
     
     banner += empty_line
     banner += f"{chars['bl']}{horiz_line}{chars['br']}\n"

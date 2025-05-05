@@ -187,7 +187,7 @@ class ContentManager(DatabaseManager):
         
         return content
     
-def update_content(self, content_id: str, content_data: Dict[str, Any]) -> bool:
+    def update_content(self, content_id: str, content_data: Dict[str, Any]) -> bool:
         """
         Update content data
         

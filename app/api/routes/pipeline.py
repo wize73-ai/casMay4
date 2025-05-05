@@ -555,11 +555,15 @@ async def simplify_text(
                 
                 # Try to use the simplification pipeline directly if available
                 if hasattr(processor, "simplification_pipeline") and processor.simplification_pipeline:
+                    # Convert target_level to a numeric level if it's a digit, or use level 1 for "simple"
+                    level = int(simplification_request.target_level) if simplification_request.target_level.isdigit() else 1
+                    
                     return await processor.simplification_pipeline.simplify(
                         text=simplification_request.text,
                         language=simplification_request.language,
-                        level=int(simplification_request.target_level) if simplification_request.target_level.isdigit() else 1,
-                        target_grade_level=None
+                        level=level,
+                        # Don't pass target_grade_level parameter which causes issues
+                        options={}
                     )
                 
                 # Fallback to generic processing

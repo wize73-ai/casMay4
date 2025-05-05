@@ -6,6 +6,14 @@
         "task": "language_detection",
         "framework": "transformers"
     },
+    "mbart_translation": {
+        "model_name": "facebook/mbart-large-50-many-to-many-mmt",
+        "tokenizer_name": "facebook/mbart-large-50-many-to-many-mmt",
+        "task": "translation",
+        "type": "transformers",
+        "model_class": "MBartForConditionalGeneration",
+        "framework": "transformers"
+    },
     "translation": {
         "model_name": "google/mt5-small",
         "tokenizer_name": "google/mt5-small",
@@ -21,11 +29,11 @@
         "framework": "transformers"
     },
     "simplifier": {
-        "model_name": "t5-small",
-        "tokenizer_name": "t5-small",
+        "model_name": "facebook/bart-large-cnn",
+        "tokenizer_name": "facebook/bart-large-cnn",
         "task": "simplification",
         "type": "transformers",
-        "model_class": "T5ForConditionalGeneration",
+        "model_class": "BartForConditionalGeneration",
         "framework": "transformers"
     },
     "rag_generator": {

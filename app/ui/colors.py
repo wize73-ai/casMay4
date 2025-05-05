@@ -78,9 +78,18 @@ def init_terminal_colors() -> None:
     """
     Initialize terminal color support and configure colorama accordingly.
     """
-    strip_colors = not supports_color()
+    # Check environment variable that can force color support
+    if os.environ.get("FORCE_COLOR"):
+        strip_colors = False
+        os.environ.pop('NO_COLOR', None)  # Clear any NO_COLOR setting
+        print("[CasaLingua UI] Terminal color output forced by FORCE_COLOR")
+    else:
+        strip_colors = not supports_color()
+    
+    # Initialize colorama with appropriate settings
     init(autoreset=True, strip=strip_colors, convert=True)
-    if strip_colors:
+    
+    if strip_colors and not os.environ.get("FORCE_COLOR"):
         print("[CasaLingua UI] Terminal color output disabled (NO_COLOR detected)")
 
 def colored_text(text: str, color_code: str, style: str = None) -> str:
