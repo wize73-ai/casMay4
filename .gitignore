@@ -172,3 +172,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Ignore directories with large binaries
+/cache/
+/models/
+/logs/
+
+# Local configuration files
+/temp/
+indexes/
+*.json.gz

@@ -29,6 +29,7 @@ from app.core.rag.expert import RAGExpert
 from app.audit.logger import AuditLogger
 from app.audit.metrics import MetricsCollector
 from app.audit.veracity import VeracityAuditor
+from app.services.hardware.resource_monitor import get_resource_monitor
 from app.utils.logging import get_logger
 from app.api.schemas.translation import TranslationResult, TranslationRequest
 from app.api.schemas.language import LanguageDetectionRequest
@@ -90,7 +91,10 @@ class UnifiedProcessor:
         self.rag_expert = None
         
         # Initialize verification
-        self.veracity_checker = VeracityAuditor()
+        self.veracity_checker = VeracityAuditor(model_manager=self.model_manager, config=self.config)
+        
+        # Initialize resource monitor
+        self.resource_monitor = get_resource_monitor(self.config)
         
         # Processing cache setup
         self.cache_enabled = self.config.get("enable_cache", True)
@@ -218,6 +222,13 @@ class UnifiedProcessor:
         self.docx_processor = DOCXProcessor(self.model_manager, self.config)
         self.ocr_processor = OCRProcessor(self.model_manager, self.config)
         
+        # Initialize veracity checker
+        logger.info("Initializing veracity auditor")
+        await self.veracity_checker.initialize()
+        
+        # Initialize resource monitor tasks
+        logger.info("Initializing resource monitor")
+        
         # Start cache cleanup task
         if self.cache_enabled:
             asyncio.create_task(self._cache_cleanup_task())
@@ -281,6 +292,14 @@ class UnifiedProcessor:
                 return cache_result
         
         try:
+            # Start resource monitoring for this request
+            monitor_task_id = f"request_{request_id}"
+            await self.resource_monitor.start_monitoring(monitor_task_id, {
+                "request_id": request_id,
+                "session_id": session_id,
+                "operation": options.get("operation", "process")
+            })
+            
             # 1. Detect input type
             detection_result = await self.input_detector.detect(
                 content,
@@ -308,13 +327,24 @@ class UnifiedProcessor:
                 raise ValueError(f"Unknown pipeline: {pipeline}")
             
             # 3. Check veracity if enabled
-            if options.get("verify_output", self.config.get("verify_output", False)):
-                veracity_scores = await self.veracity_checker.check(
-                    content, 
-                    result.get("processed_text", ""),
-                    options
+            if options.get("verify_output", self.config.get("verify_output", True)):
+                source_text = content if isinstance(content, str) else result.get("original_text", "")
+                source_lang = options.get("source_language", result.get("source_language", "en"))
+                target_lang = options.get("target_language", result.get("target_language", "en"))
+                
+                veracity_result = await self.veracity_checker.verify_translation(
+                    source_text=source_text,
+                    translation=result.get("processed_text", ""),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    metadata={
+                        "request_id": options.get("request_id"),
+                        "session_id": options.get("session_id"),
+                        "pipeline": pipeline,
+                        "domain": options.get("domain")
+                    }
                 )
-                result["veracity"] = veracity_scores
+                result["veracity"] = veracity_result
             
             # 4. Generate text-to-speech if requested
             if options.get("tts_output", False) and "processed_text" in result:
@@ -337,14 +367,47 @@ class UnifiedProcessor:
             )
             
             # 6. Log audit record
-            await self.audit_logger.log_processing(
-                request_id=request_id,
-                session_id=session_id,
+            user_id = options.get("user_id", "anonymous")
+            source_ip = options.get("source_ip")
+            
+            # Log model operation for main processing
+            await self.audit_logger.log_model_operation(
+                model_id=result.get("model_used", "default"),
                 operation=pipeline,
+                user_id=user_id,
+                input_metadata={
+                    "type": input_type,
+                    "source_language": source_language,
+                    "target_language": options.get("target_language"),
+                    "content_length": len(content) if isinstance(content, str) else (len(content) if content else 0),
+                    "options": {k: v for k, v in options.items() if k not in self.audit_logger.sensitive_fields}
+                },
+                output_metadata={
+                    "success": True,
+                    "veracity_score": result.get("veracity", {}).get("score", 1.0) if result.get("veracity") else 1.0,
+                    "processing_steps": list(result.keys()),
+                },
+                duration=processing_time,
                 status="success",
-                input_data={"type": input_type, "options": options},
-                output_data={"result": result},
-                processing_time=processing_time
+                correlation_id=request_id
+            )
+            
+            # Log API request
+            await self.audit_logger.log_api_request(
+                endpoint=options.get("endpoint", "process"),
+                method=options.get("method", "POST"),
+                user_id=user_id,
+                source_ip=source_ip,
+                request_id=request_id,
+                request_params={
+                    "pipeline": pipeline,
+                    "source_language": source_language,
+                    "target_language": options.get("target_language"),
+                    "operation_type": options.get("operation", pipeline)
+                },
+                status_code=200,
+                response_time=processing_time,
+                correlation_id=request_id
             )
             
             # Add timing information
@@ -355,6 +418,30 @@ class UnifiedProcessor:
             # 7. Cache result if enabled
             if self.cache_enabled and cache_key:
                 await self._add_to_cache(cache_key, result)
+            
+            # Stop resource monitoring
+            monitor_data = await self.resource_monitor.stop_monitoring(f"request_{request_id}")
+            if monitor_data:
+                # Add resource usage summary to metrics
+                resource_analysis = await self.resource_monitor.analyze_task(f"request_{request_id}")
+                self.metrics.record_resource_usage(
+                    pipeline,
+                    {
+                        "cpu_avg": resource_analysis.get("cpu", {}).get("avg", 0),
+                        "cpu_max": resource_analysis.get("cpu", {}).get("max", 0),
+                        "memory_avg": resource_analysis.get("memory", {}).get("avg_percent", 0),
+                        "memory_peak": resource_analysis.get("memory", {}).get("peak", 0),
+                        "gpu_utilization": resource_analysis.get("gpu", [{}])[0].get("utilization", {}).get("avg", 0) if resource_analysis.get("gpu") else 0,
+                        "request_id": request_id
+                    }
+                )
+                
+                # Add resource summary to result
+                result["resource_usage"] = {
+                    "cpu_percent_avg": resource_analysis.get("cpu", {}).get("avg", 0),
+                    "memory_percent_avg": resource_analysis.get("memory", {}).get("avg_percent", 0),
+                    "duration_seconds": resource_analysis.get("duration", processing_time),
+                }
             
             logger.info(f"Processing complete for request {request_id} in {processing_time:.2f}s")
             return result
@@ -373,17 +460,53 @@ class UnifiedProcessor:
             )
             
             # Log audit record for failure
-            await self.audit_logger.log_processing(
-                request_id=request_id,
-                session_id=session_id,
+            user_id = options.get("user_id", "anonymous")
+            source_ip = options.get("source_ip")
+            
+            # Log model operation failure
+            await self.audit_logger.log_model_operation(
+                model_id=options.get("model_name", "default"),
                 operation=options.get("operation", "unknown"),
+                user_id=user_id,
+                input_metadata={
+                    "source_language": options.get("source_language", "unknown"),
+                    "target_language": options.get("target_language", "unknown"),
+                    "content_length": len(content) if isinstance(content, str) else (len(content) if content else 0),
+                    "options": {k: v for k, v in options.items() if k not in self.audit_logger.sensitive_fields}
+                },
+                output_metadata={
+                    "success": False,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                duration=processing_time,
                 status="failure",
-                input_data={"content_length": len(content) if content else 0, 
-                            "options": options},
-                output_data={"error": str(e)},
-                processing_time=processing_time
+                error_message=str(e),
+                correlation_id=request_id
             )
             
+            # Log API request failure
+            await self.audit_logger.log_api_request(
+                endpoint=options.get("endpoint", "process"),
+                method=options.get("method", "POST"),
+                user_id=user_id,
+                source_ip=source_ip,
+                request_id=request_id,
+                request_params={
+                    "operation_type": options.get("operation", "unknown")
+                },
+                status_code=500,
+                response_time=processing_time,
+                error_message=str(e),
+                correlation_id=request_id
+            )
+            
+            # Stop resource monitoring if it was started
+            try:
+                await self.resource_monitor.stop_monitoring(f"request_{request_id}")
+            except Exception:
+                pass
+                
             # Return error result
             return {
                 "status": "error",
@@ -490,18 +613,83 @@ class UnifiedProcessor:
                 "consistency": options.get("anonymization_consistency", True)
             }
             
+            # Start timer for anonymization
+            anonymize_start_time = time.time()
+            
+            # Execute anonymization
             anonymized_text, entities = await self.anonymization_pipeline.process(
                 text,
                 source_language,
                 anonymization_options
             )
             
+            # Calculate anonymization time
+            anonymization_time = time.time() - anonymize_start_time
+            
+            # Update result
             result["processed_text"] = anonymized_text
             result["anonymized_entities"] = {
                 "count": len(entities),
                 "types": list(set(e["type"] for e in entities))
             }
             result["anonymization_applied"] = True
+            result["anonymization_time"] = anonymization_time
+            
+            # Log anonymization operation
+            request_id = options.get("request_id", str(uuid.uuid4()))
+            user_id = options.get("user_id", "anonymous")
+            
+            # Determine PII severity level
+            pii_severity = "low"
+            entity_types = set(e["type"] for e in entities)
+            
+            # Check for high-risk PII types
+            high_risk_types = {"SSN", "CREDIT_CARD", "PASSPORT_NUMBER", "BANK_ACCOUNT"}
+            medium_risk_types = {"EMAIL", "PHONE_NUMBER", "ADDRESS", "PERSON", "DATE_OF_BIRTH"}
+            
+            if any(etype in high_risk_types for etype in entity_types):
+                pii_severity = "high"
+            elif any(etype in medium_risk_types for etype in entity_types):
+                pii_severity = "medium"
+            
+            # Audit the anonymization operation
+            await self.audit_logger.log_model_operation(
+                model_id="anonymizer",
+                operation="anonymization",
+                user_id=user_id,
+                input_metadata={
+                    "language": source_language,
+                    "strategy": anonymization_options["strategy"],
+                    "text_length": len(text),
+                    "domain": options.get("domain")
+                },
+                output_metadata={
+                    "success": True,
+                    "entities_found": len(entities),
+                    "entity_types": list(entity_types),
+                    "pii_severity": pii_severity,
+                    "anonymization_time": anonymization_time
+                },
+                duration=anonymization_time,
+                status="success",
+                correlation_id=request_id
+            )
+            
+            # Log security event for high severity PII
+            if pii_severity == "high":
+                await self.audit_logger.log_security_event(
+                    event_type="high_risk_pii_detection",
+                    severity="high",
+                    user_id=user_id,
+                    source_ip=options.get("source_ip"),
+                    details={
+                        "entity_types": list(entity_types),
+                        "entities_count": len(entities),
+                        "anonymization_strategy": anonymization_options["strategy"],
+                        "pipeline": "anonymization"
+                    },
+                    correlation_id=request_id
+                )
         
         # 4. Apply translation if needed
         target_language = options.get("target_language")
@@ -518,12 +706,61 @@ class UnifiedProcessor:
                 model_id=options.get("model_name")
             )
 
+            # Start timer for translation
+            translation_start_time = time.time()
+            
+            # Execute translation
             translation_result = await self.translation_pipeline.translate(translation_request)
-
+            
+            # Calculate translation time
+            translation_time = time.time() - translation_start_time
+            
+            # Update result
             result["processed_text"] = translation_result.translated_text
             result["translation_applied"] = True
             result["translation_model"] = translation_result.model_used
             result["target_language"] = target_language
+            result["translation_time"] = translation_time
+            
+            # Log translation operation specifically
+            request_id = options.get("request_id", str(uuid.uuid4()))
+            user_id = options.get("user_id", "anonymous")
+            
+            # Audit the translation operation
+            await self.audit_logger.log_model_operation(
+                model_id=translation_result.model_used,
+                operation="translation",
+                user_id=user_id,
+                input_metadata={
+                    "source_language": source_language,
+                    "target_language": target_language,
+                    "text_length": len(result["processed_text"]),
+                    "domain": options.get("domain"),
+                    "with_context": context is not None
+                },
+                output_metadata={
+                    "success": True,
+                    "translation_time": translation_time,
+                },
+                duration=translation_time,
+                status="success",
+                correlation_id=request_id
+            )
+            
+            # Verify translation quality if enabled
+            if options.get("verify_output", self.config.get("verify_translation", True)):
+                veracity_result = await self.veracity_checker.verify_translation(
+                    source_text=text,
+                    translation=translation_result.translated_text,
+                    source_lang=source_language,
+                    target_lang=target_language,
+                    metadata={
+                        "request_id": request_id,
+                        "model_used": translation_result.model_used,
+                        "domain": options.get("domain")
+                    }
+                )
+                result["translation_veracity"] = veracity_result
         else:
             # If no translation, target language is the same as source
             result["target_language"] = source_language
@@ -540,6 +777,13 @@ class UnifiedProcessor:
             if context:
                 simplification_options["context"] = context
             
+            # Start timer for simplification
+            simplify_start_time = time.time()
+            
+            # Text before simplification for comparison
+            text_before_simplification = result["processed_text"]
+            
+            # Execute simplification
             simplification_result = await self.simplification_pipeline.simplify(
                 result["processed_text"],
                 simplify_language,
@@ -548,14 +792,44 @@ class UnifiedProcessor:
                 simplification_options
             )
             
+            # Calculate simplification time
+            simplification_time = time.time() - simplify_start_time
+            
+            # Update result
             result["processed_text"] = simplification_result["simplified_text"]
             result["simplification_applied"] = True
             result["simplification_level"] = simplification_result.get("level")
             result["grade_level"] = simplification_result.get("grade_level")
+            result["simplification_time"] = simplification_time
             
             # Add readability metrics if available
             if "metrics" in simplification_result:
                 result["readability_metrics"] = simplification_result["metrics"]
+            
+            # Log simplification operation
+            request_id = options.get("request_id", str(uuid.uuid4()))
+            user_id = options.get("user_id", "anonymous")
+            
+            # Audit the simplification operation
+            await self.audit_logger.log_model_operation(
+                model_id=simplification_result.get("model_used", "simplifier"),
+                operation="simplification",
+                user_id=user_id,
+                input_metadata={
+                    "language": simplify_language,
+                    "simplification_level": options.get("simplification_level", 1),
+                    "grade_level": options.get("grade_level"),
+                    "text_length": len(text_before_simplification)
+                },
+                output_metadata={
+                    "success": True,
+                    "simplification_time": simplification_time,
+                    "metrics": simplification_result.get("metrics", {})
+                },
+                duration=simplification_time,
+                status="success",
+                correlation_id=request_id
+            )
         
         # Add processing metadata
         result["metadata"].update(metadata)

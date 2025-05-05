@@ -1,0 +1,26 @@
+[
+  {
+    "source_lang": "en",
+    "target_lang": "es",
+    "text": "The quick brown fox jumps over the lazy dog.",
+    "error": "'TranslationModelWrapper' object has no attribute '_get_mbart_language_code'"
+  },
+  {
+    "source_lang": "es",
+    "target_lang": "en",
+    "text": "El zorro marrón rápido salta sobre el perro perezoso.",
+    "error": "'TranslationModelWrapper' object has no attribute '_get_mbart_language_code'"
+  },
+  {
+    "source_lang": "en",
+    "target_lang": "fr",
+    "text": "The quick brown fox jumps over the lazy dog.",
+    "error": "'TranslationModelWrapper' object has no attribute '_get_mbart_language_code'"
+  },
+  {
+    "source_lang": "fr",
+    "target_lang": "en",
+    "text": "Le rapide renard brun saute par-dessus le chien paresseux.",
+    "error": "'TranslationModelWrapper' object has no attribute '_get_mbart_language_code'"
+  }
+]

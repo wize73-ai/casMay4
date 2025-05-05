@@ -1,0 +1,26 @@
+{
+  "en-es": {
+    "positive_pairs": [],
+    "negative_pairs": []
+  },
+  "es-en": {
+    "positive_pairs": [],
+    "negative_pairs": []
+  },
+  "en-fr": {
+    "positive_pairs": [],
+    "negative_pairs": []
+  },
+  "fr-en": {
+    "positive_pairs": [],
+    "negative_pairs": []
+  },
+  "en-de": {
+    "positive_pairs": [],
+    "negative_pairs": []
+  },
+  "de-en": {
+    "positive_pairs": [],
+    "negative_pairs": []
+  }
+}

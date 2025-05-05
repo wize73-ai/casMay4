@@ -1,0 +1,8 @@
+{
+  "source_lang": "en",
+  "target_lang": "es",
+  "text": "The quick brown fox jumps over the lazy dog.",
+  "mt5_translation": "The quick brown fox :",
+  "mt5_corrupted": "<extra_id_0> This is a poor quality translation",
+  "fallback_result": "La fox marrón rápida salta sobre el can loco."
+}

@@ -75,11 +75,22 @@ class VeracityAuditor:
         
         # Load reference embeddings if available
         embeddings_path = get_config_value(
-            self.veracity_config, "reference_embeddings_path", None
+            self.veracity_config, "reference_embeddings_path", "data/reference_embeddings.json"
         )
         
-        if embeddings_path:
-            await self._load_reference_embeddings(embeddings_path)
+        try:
+            if embeddings_path:
+                await self._load_reference_embeddings(embeddings_path)
+        except Exception as e:
+            logger.warning(f"Failed to load reference embeddings: {str(e)}")
+            logger.info("Creating empty reference embeddings structure")
+            # Initialize empty reference structure
+            self.reference_embeddings = {
+                "en-es": {"positive_pairs": [], "negative_pairs": []},
+                "es-en": {"positive_pairs": [], "negative_pairs": []},
+                "en-fr": {"positive_pairs": [], "negative_pairs": []},
+                "fr-en": {"positive_pairs": [], "negative_pairs": []}
+            }
             
         # Initialize language pairs
         self.language_pairs = get_config_value(
@@ -544,13 +555,28 @@ class VeracityAuditor:
         """
         reference = self.reference_embeddings.get(lang_pair, {})
 
-        if "positive_pairs" not in reference or "negative_pairs" not in reference:
-            return 0.8  # Default confidence
-
-        # Calculate similarity
+        # Calculate similarity between source and translation
         similarity = self._calculate_similarity(source_embedding, translation_embedding)
 
-        # Compare with reference positive and negative pairs
+        # If no reference data or empty reference sets, use heuristic confidence
+        if (not reference or 
+            "positive_pairs" not in reference or 
+            "negative_pairs" not in reference or
+            not reference["positive_pairs"] or 
+            not reference["negative_pairs"]):
+            
+            # Use similarity-based heuristic for confidence when no reference data
+            if similarity > 0.9:
+                return 0.9  # High similarity suggests high confidence
+            elif similarity > 0.8:
+                return 0.8  # Good similarity 
+            elif similarity > 0.7:
+                return 0.7  # Moderate similarity
+            else:
+                return 0.6  # Lower similarity, lower confidence
+        
+        # If we have reference data, use it for confidence calculation
+        # Process positive pairs
         positive_similarities = []
         for i in range(len(reference["positive_pairs"]) // 2):
             pos_source = reference["positive_pairs"][i*2]
@@ -558,6 +584,7 @@ class VeracityAuditor:
             pos_similarity = self._calculate_similarity(pos_source, pos_translation)
             positive_similarities.append(pos_similarity)
 
+        # Process negative pairs
         negative_similarities = []
         for i in range(len(reference["negative_pairs"]) // 2):
             neg_source = reference["negative_pairs"][i*2]
@@ -565,10 +592,19 @@ class VeracityAuditor:
             neg_similarity = self._calculate_similarity(neg_source, neg_translation)
             negative_similarities.append(neg_similarity)
 
-        # Calculate confidence based on position relative to positive/negative distributions
+        # Fall back to heuristic if we have empty arrays
         if not positive_similarities or not negative_similarities:
-            return 0.8
-
+            # Use similarity-based heuristic as above
+            if similarity > 0.9:
+                return 0.9  # High similarity suggests high confidence
+            elif similarity > 0.8:
+                return 0.8  # Good similarity 
+            elif similarity > 0.7:
+                return 0.7  # Moderate similarity
+            else:
+                return 0.6  # Lower similarity, lower confidence
+                
+        # Calculate statistics from reference data
         avg_positive = np.mean(positive_similarities)
         avg_negative = np.mean(negative_similarities)
         std_positive = np.std(positive_similarities) or 0.1
